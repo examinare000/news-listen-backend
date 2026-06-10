@@ -1,0 +1,13 @@
+# Cloud Build へアップロードするソースから除外する（.dockerignore とは別物）。
+# .venv やテストを含めると 200MB 超の無駄なアップロードになるため明示的に除外する。
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+tests/
+.DS_Store
+.claude/

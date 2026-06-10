@@ -1,0 +1,50 @@
+# backend/cloudbuild.yaml — API・ジョブ両イメージを Cloud Build で同時ビルド
+#
+# ローカル（arm64 Mac）での docker build は Cloud Run（linux/amd64）向けに
+# エミュレーションが必要で遅いため、ネイティブ amd64 の Cloud Build を使う。
+#
+# 使い方:
+#   gcloud builds submit --config cloudbuild.yaml \
+#     --substitutions=_REGION=asia-northeast1,_REPO=audio-news,_TAG=<git-sha> .
+#
+# ビルドコンテキストは backend/ ディレクトリ（このファイルと同階層）。
+
+substitutions:
+  _REGION: asia-northeast1
+  _REPO: audio-news
+  _TAG: latest
+
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    id: build-api
+    args:
+      - build
+      - -f
+      - Dockerfile.api
+      - -t
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/audio-news-api:${_TAG}'
+      - -t
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/audio-news-api:latest'
+      - .
+
+  - name: 'gcr.io/cloud-builders/docker'
+    id: build-jobs
+    args:
+      - build
+      - -f
+      - Dockerfile.jobs
+      - -t
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/audio-news-jobs:${_TAG}'
+      - -t
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/audio-news-jobs:latest'
+      - .
+
+images:
+  - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/audio-news-api:${_TAG}'
+  - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/audio-news-api:latest'
+  - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/audio-news-jobs:${_TAG}'
+  - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/audio-news-jobs:latest'
+
+options:
+  # 既定のログバケットを使わずに Cloud Logging のみへ出力（ビルド SA の権限要件を簡素化）
+  logging: CLOUD_LOGGING_ONLY
