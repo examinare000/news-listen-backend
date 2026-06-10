@@ -89,6 +89,25 @@ def test_score_articles_fallback_when_gemini_returns_invalid_json():
     assert scores[0].score == 0.5
 
 
+def test_score_articles_filters_out_unknown_ids_from_gemini():
+    """Gemini が候補に存在しない ID（幻覚）を返した場合、その ID は結果から除外される"""
+    mock_gemini = MagicMock()
+    mock_gemini.generate_text.return_value = json.dumps([
+        {"id": "a1", "score": 0.9},
+        {"id": "hallucinated", "score": 0.7},  # candidates に存在しない ID
+    ])
+
+    from jobs.recommendation.recommender import Recommender
+    rec = Recommender(gemini_client=mock_gemini)
+
+    candidates = [_make_article("a1", "Rust is fast")]
+
+    scores = rec.score_articles(candidates, starred_articles=[], dismissed_articles=[])
+
+    assert len(scores) == 1
+    assert scores[0].article_id == "a1"
+
+
 def test_score_articles_with_no_history_returns_default_scores():
     mock_gemini = MagicMock()
     mock_gemini.generate_text.return_value = json.dumps([

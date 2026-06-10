@@ -86,9 +86,14 @@ class Recommender:
         try:
             json_str = _extract_json(raw)
             scored = json.loads(json_str)
+            # Gemini が候補集合に存在しない ID（幻覚）を返すことがあるため、
+            # 元の candidates に含まれる ID のみを採用し、永続化される推薦が
+            # 入力候補と整合するようにする。
+            valid_ids = {a.id for a in candidates}
             return [
                 RecommendedArticle(article_id=s["id"], score=float(s["score"]))
                 for s in scored
+                if s["id"] in valid_ids
             ]
         except json.JSONDecodeError as e:
             logger.warning("Gemini returned invalid JSON: %s. Raw: %.200r", e, raw)
