@@ -32,3 +32,4 @@ def test_dismiss_article_returns_200(api_client, mock_db):
     )
     assert response.status_code == 200
     assert response.json()["status"] == "dismissed"
+    mock_db.add_dismissed_article.assert_called_once_with("user1", "abc123")
