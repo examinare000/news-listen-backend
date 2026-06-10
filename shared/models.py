@@ -6,6 +6,10 @@ from pydantic import BaseModel, Field
 PodcastType = Literal["single", "digest"]
 PodcastStatus = Literal["processing", "completed", "failed", "partial_failed"]
 
+# script_generator._DIFFICULTY_INSTRUCTIONS のキーと 1:1 対応させる。
+# 新しい難易度を追加する場合は両ファイルを同時に変更すること。
+DifficultyLevel = Literal["toeic_600", "toeic_900", "ielts_55", "ielts_7", "eiken_2", "eiken_p1"]
+
 
 class Article(BaseModel):
     id: str
@@ -28,7 +32,7 @@ class UserPrefs(BaseModel):
     starred_article_ids: list[str] = Field(default_factory=list)
     dismissed_article_ids: list[str] = Field(default_factory=list)
     rss_sources: list[RssSource] = Field(default_factory=list)
-    default_difficulty: str
+    default_difficulty: DifficultyLevel
     default_playback_speed: float = 1.0
     digest_enabled: bool = True
     digest_article_count: int = 5
@@ -50,7 +54,7 @@ class Podcast(BaseModel):
     id: str
     type: PodcastType
     article_ids: list[str]
-    difficulty: str
+    difficulty: DifficultyLevel
     audio_url: str
     japanese_intro_text: str
     duration_seconds: int
