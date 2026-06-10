@@ -10,4 +10,5 @@ COPY jobs/ ./jobs/
 
 # JOB_MODULE 環境変数で実行するジョブを切り替える
 # 例: JOB_MODULE=jobs.rss_fetcher.main
-CMD python -m ${JOB_MODULE}
+# 未設定のまま起動すると原因不明のクラッシュになるため、明示的なエラーで即座に失敗させる。
+CMD ["sh", "-c", "if [ -z \"$JOB_MODULE\" ]; then echo 'ERROR: JOB_MODULE environment variable is not set' >&2; exit 1; fi; exec python -m \"$JOB_MODULE\""]
