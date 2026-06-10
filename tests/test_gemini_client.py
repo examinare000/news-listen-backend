@@ -54,6 +54,25 @@ def test_generate_tts_raises_value_error_on_empty_candidates():
             client.generate_tts("Hello world", voice="Kore")
 
 
+def test_generate_tts_raises_value_error_when_content_is_none():
+    """candidate.content が None（safety ブロック等）の場合、明確な ValueError を送出する"""
+    with patch("shared.gemini_client.genai.Client") as mock_client_class:
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+
+        mock_candidate = MagicMock()
+        mock_candidate.content = None  # safety フィルタ等で content が欠落
+        mock_response = MagicMock()
+        mock_response.candidates = [mock_candidate]
+        mock_client.models.generate_content.return_value = mock_response
+
+        from shared.gemini_client import GeminiClient
+        client = GeminiClient(api_key="test-key")
+
+        with pytest.raises(ValueError, match="without content"):
+            client.generate_tts("Hello world", voice="Kore")
+
+
 def test_generate_tts_raises_value_error_on_empty_parts():
     """Gemini TTS が音声 parts を返さない場合、明確な ValueError を送出する"""
     with patch("shared.gemini_client.genai.Client") as mock_client_class:

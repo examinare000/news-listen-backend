@@ -56,7 +56,16 @@ class GeminiClient:
                 "Verify the TTS model name and API key."
             )
 
-        parts = response.candidates[0].content.parts
+        # candidate.content は SAFETY 等でブロックされた際に None になり得る。
+        # ガードなしで .parts へアクセスすると AttributeError でクラッシュするため明示的に弾く。
+        content = response.candidates[0].content
+        if content is None:
+            raise ValueError(
+                f"Gemini TTS returned a candidate without content for voice={voice!r} "
+                "(likely blocked by safety filters)."
+            )
+
+        parts = content.parts
         if not parts:
             raise ValueError(
                 f"Gemini TTS returned no audio parts for voice={voice!r}."
