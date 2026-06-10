@@ -80,7 +80,7 @@ class TestRssSource:
 
 class TestUserPrefs:
     def test_valid_creation_with_defaults(self):
-        prefs = UserPrefs(user_id="user1", default_difficulty="intermediate")
+        prefs = UserPrefs(user_id="user1", default_difficulty="toeic_900")
         assert prefs.starred_article_ids == []
         assert prefs.dismissed_article_ids == []
         assert prefs.rss_sources == []
@@ -91,7 +91,7 @@ class TestUserPrefs:
     def test_rss_sources_as_nested_models(self):
         prefs = UserPrefs(
             user_id="user1",
-            default_difficulty="beginner",
+            default_difficulty="toeic_600",
             rss_sources=[{"name": "HackerNews", "url": "https://news.ycombinator.com/rss"}],
         )
         assert len(prefs.rss_sources) == 1
@@ -99,13 +99,13 @@ class TestUserPrefs:
         assert prefs.rss_sources[0].name == "HackerNews"
 
     def test_custom_playback_speed(self):
-        prefs = UserPrefs(user_id="user1", default_difficulty="advanced", default_playback_speed=1.5)
+        prefs = UserPrefs(user_id="user1", default_difficulty="ielts_7", default_playback_speed=1.5)
         assert prefs.default_playback_speed == 1.5
 
     def test_starred_and_dismissed_ids(self):
         prefs = UserPrefs(
             user_id="user1",
-            default_difficulty="intermediate",
+            default_difficulty="eiken_p1",
             starred_article_ids=["art1", "art2"],
             dismissed_article_ids=["art3"],
         )
@@ -114,7 +114,7 @@ class TestUserPrefs:
 
     def test_missing_user_id_raises(self):
         with pytest.raises(ValidationError):
-            UserPrefs(default_difficulty="intermediate")
+            UserPrefs(default_difficulty="toeic_900")
 
 
 class TestRecommendedArticle:
@@ -157,7 +157,7 @@ class TestPodcast:
             id="pod1",
             type="single",
             article_ids=["art1"],
-            difficulty="intermediate",
+            difficulty="toeic_900",
             audio_url="https://storage.example.com/pod1.mp3",
             japanese_intro_text="日本語のイントロ",
             duration_seconds=300,
@@ -191,6 +191,22 @@ class TestPodcast:
     def test_invalid_status_raises(self):
         with pytest.raises(ValidationError):
             self._build(status="unknown_status")
+
+    def test_invalid_difficulty_raises(self):
+        """script_generator._DIFFICULTY_INSTRUCTIONS に存在しない文字列は拒否される。"""
+        with pytest.raises(ValidationError):
+            self._build(difficulty="intermediate")
+
+    def test_all_valid_difficulties(self):
+        """DifficultyLevel の全バリアントが Podcast で使えること。"""
+        for difficulty in ["toeic_600", "toeic_900", "ielts_55", "ielts_7", "eiken_2", "eiken_p1"]:
+            podcast = self._build(difficulty=difficulty)
+            assert podcast.difficulty == difficulty
+
+    def test_invalid_default_difficulty_raises(self):
+        """UserPrefs.default_difficulty も DifficultyLevel を使うこと。"""
+        with pytest.raises(ValidationError):
+            UserPrefs(user_id="user1", default_difficulty="beginner")
 
     def test_error_message_set_on_failure(self):
         podcast = self._build(status="failed", audio_url="", duration_seconds=0, error_message="TTS API timeout")
