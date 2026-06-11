@@ -2,6 +2,8 @@
 from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 
 @contextmanager
 def _mock_adc(service_account_email="news-listen-sa@example.iam.gserviceaccount.com",
@@ -107,3 +109,28 @@ def test_generate_audio_url_uses_iam_signing_on_cloud_run():
         _, kwargs = mock_blob.generate_signed_url.call_args
         assert kwargs["service_account_email"] == "sa@example.iam.gserviceaccount.com"
         assert kwargs["access_token"] == "ya29.token123"
+
+
+def test_generate_audio_url_fails_fast_when_credentials_cannot_sign():
+    """SA でない ADC（service_account_email / token を持たない）の場合は、
+    曖昧な AttributeError ではなく明確なエラーで早期に失敗すること。
+
+    Cloud Run 以外（ユーザー ADC 等）で誤って動かした際に原因を即座に把握できるようにする。
+    """
+    with patch.dict("os.environ", {"GCS_BUCKET_NAME": "test-bucket"}), \
+         patch("shared.storage_client.storage.Client") as mock_client_class, \
+         _mock_adc(service_account_email=None, token=None):
+
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+        mock_blob = MagicMock()
+        mock_client.bucket.return_value.blob.return_value = mock_blob
+
+        from shared.storage_client import StorageClient
+        client = StorageClient()
+
+        with pytest.raises(RuntimeError, match="service_account_email"):
+            client.generate_audio_url("podcasts/pod1/toeic_900.mp3")
+
+        # 署名は試行されないこと
+        mock_blob.generate_signed_url.assert_not_called()
