@@ -50,10 +50,22 @@ class StorageClient:
         # service_account_email / token は refresh 後に確定する
         credentials.refresh(AuthRequest())
 
+        # IAM signBlob には SA メールとアクセストークンが必須。ユーザー ADC など
+        # SA でない認証情報では service_account_email が存在せず、そのまま渡すと
+        # 曖昧な AttributeError になる。原因が分かる明確なエラーで早期に失敗させる。
+        service_account_email = getattr(credentials, "service_account_email", None)
+        token = getattr(credentials, "token", None)
+        if not service_account_email or not token:
+            raise RuntimeError(
+                "署名付きURLの生成には service_account_email と access_token を持つ"
+                "サービスアカウント認証情報が必要です。Cloud Run のSA・SA鍵・"
+                "インパーソネーションのいずれかで実行してください。"
+            )
+
         return blob.generate_signed_url(
             version="v4",
             expiration=timedelta(seconds=expiration_seconds),
-            service_account_email=credentials.service_account_email,
-            access_token=credentials.token,
+            service_account_email=service_account_email,
+            access_token=token,
         )
 
