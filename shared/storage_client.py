@@ -4,6 +4,8 @@ from __future__ import annotations
 import os
 from datetime import timedelta
 
+from google.auth import default as google_auth_default
+from google.auth.transport.requests import Request as AuthRequest
 from google.cloud import storage
 
 
@@ -34,8 +36,24 @@ class StorageClient:
         Args:
             blob_name: GCS blob パス（upload_audio() の戻り値）
             expiration_seconds: URL の有効期限（デフォルト 1 時間）
+
+        Cloud Run のサービスアカウント認証情報（コンピュート認証情報）は秘密鍵を
+        持たないため、引数なしの generate_signed_url() は
+        "you need a private key to sign credentials" で失敗する。
+        ADC から取得したアクセストークンと SA メールアドレスを渡し、
+        IAM signBlob API 経由で署名する（SA に roles/iam.serviceAccountTokenCreator が必要）。
         """
         bucket = self._client.bucket(self._bucket_name)
         blob = bucket.blob(blob_name)
-        return blob.generate_signed_url(expiration=timedelta(seconds=expiration_seconds))
+
+        credentials, _ = google_auth_default()
+        # service_account_email / token は refresh 後に確定する
+        credentials.refresh(AuthRequest())
+
+        return blob.generate_signed_url(
+            version="v4",
+            expiration=timedelta(seconds=expiration_seconds),
+            service_account_email=credentials.service_account_email,
+            access_token=credentials.token,
+        )
 
