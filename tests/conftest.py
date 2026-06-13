@@ -37,11 +37,24 @@ def mock_storage():
 
 
 @pytest.fixture
-def api_client(mock_db, mock_storage):
+def mock_job_trigger():
+    """API ルーターテスト用の JobTrigger モック。
+
+    star/dismiss が BackgroundTasks 経由でジョブを起動することを検証する。
+    trigger() はデフォルトで True を返す。
+    """
+    mock = MagicMock()
+    mock.trigger.return_value = True
+    return mock
+
+
+@pytest.fixture
+def api_client(mock_db, mock_storage, mock_job_trigger):
     """API_KEY と USER_ID を設定した TestClient。
 
-    FirestoreClient / StorageClient は dependency_overrides 経由でモックに差し替えられる。
-    テスト内で mock_db / mock_storage のメソッドを設定してから api_client を呼ぶこと。
+    FirestoreClient / StorageClient / JobTrigger は dependency_overrides 経由で
+    モックに差し替えられる。テスト内で mock_db / mock_storage のメソッドを設定してから
+    api_client を呼ぶこと。
 
     例:
         def test_foo(api_client, mock_db, mock_storage):
@@ -52,10 +65,15 @@ def api_client(mock_db, mock_storage):
     with patch.dict("os.environ", {"API_KEY": "test-key", "USER_ID": "user1"}):
         import importlib
         import api.main as m
-        from api.dependencies import get_firestore_client, get_storage_client
+        from api.dependencies import (
+            get_firestore_client,
+            get_job_trigger,
+            get_storage_client,
+        )
         importlib.reload(m)
         # lru_cache をバイパスして各テストに独立したモックを注入する
         m.app.dependency_overrides[get_firestore_client] = lambda: mock_db
         m.app.dependency_overrides[get_storage_client] = lambda: mock_storage
+        m.app.dependency_overrides[get_job_trigger] = lambda: mock_job_trigger
         yield TestClient(m.app)
         m.app.dependency_overrides.clear()

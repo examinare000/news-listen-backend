@@ -41,6 +41,19 @@ def get_firestore_client() -> FirestoreClient:
     return FirestoreClient()
 
 
+@lru_cache(maxsize=1)
+def get_job_trigger():
+    """JobTrigger のシングルトンを返す。
+
+    JOB_TRIGGER_BACKEND 環境変数で起動経路（Cloud Run / ローカルサブプロセス）を切り替える。
+    debounce ロックに FirestoreClient を共有するため get_firestore_client() を注入する。
+    """
+    # 遅延 import: モジュール読み込み時の循環依存を避ける。
+    from shared.job_trigger import build_job_trigger
+
+    return build_job_trigger(get_firestore_client())
+
+
 def get_user_id() -> str:
     """環境変数 USER_ID を返す。未設定の場合は HTTP 500 を送出する。
 
