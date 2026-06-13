@@ -15,3 +15,15 @@ def article_id_for_url(url: str) -> str:
     ここに一元化し、将来のアルゴリズム変更時の不整合を防ぐ。
     """
     return hashlib.sha256(url.encode()).hexdigest()[:20]
+
+
+def cache_key_for(article_id: str, difficulty: str, language: str) -> str:
+    """クロスユーザー Podcast キャッシュの Firestore doc-id を生成する。
+
+    形式: "{article_id}__{difficulty}__{language}"
+
+    article_id（SHA-256 hex[:20]）と difficulty（DifficultyLevel Literal）は
+    いずれも '__' を含まないため、セパレータで一意に分解できる。
+    キャッシュキーの組み立てを散在させず、この関数に一元化する。
+    """
+    return f"{article_id}__{difficulty}__{language}"
