@@ -6,6 +6,14 @@ from pydantic import BaseModel, Field
 PodcastType = Literal["single", "digest"]
 PodcastStatus = Literal["processing", "completed", "failed", "partial_failed"]
 
+# クロスユーザーキャッシュのデフォルト言語。現状は固定値（言語切替 UI は未実装）。
+# キャッシュキーの言語次元として将来の多言語化に備えて用意する。
+DEFAULT_PODCAST_LANGUAGE: str = "ja-en"
+
+# PodcastStatus の partial_failed はキャッシュに存在しない概念のため別型にする。
+# 型レベルで混入を防ぎ、キャッシュの状態機械を明確に表現する。
+CacheStatus = Literal["processing", "completed", "failed"]
+
 # script_generator._DIFFICULTY_INSTRUCTIONS のキーと 1:1 対応させる。
 # 新しい難易度を追加する場合は両ファイルを同時に変更すること。
 DifficultyLevel = Literal["toeic_600", "toeic_900", "ielts_55", "ielts_7", "eiken_2", "eiken_p1"]
@@ -62,3 +70,21 @@ class Podcast(BaseModel):
     error_message: str | None = None
     created_at: datetime
     user_id: str
+
+
+class PodcastCache(BaseModel):
+    """クロスユーザー共有 Podcast キャッシュ。
+
+    Firestore コレクション `podcastCache/{cache_key}` に対応する。
+    processing 確保時点では成果物が未確定のため audio_url 等を Optional とする。
+    """
+
+    cache_key: str
+    article_id: str
+    difficulty: DifficultyLevel
+    language: str
+    status: CacheStatus
+    audio_url: str | None = None
+    japanese_intro_text: str | None = None
+    duration_seconds: int | None = None
+    created_at: datetime
