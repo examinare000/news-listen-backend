@@ -7,6 +7,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY shared/ ./shared/
 COPY api/ ./api/
+# JOB_TRIGGER_BACKEND=local_process（ローカル docker compose）時に api コンテナ内で
+# `python -m jobs.*.main` を起動するため jobs/ を同梱する。Cloud Run の cloud_run モードでは
+# Admin API 経由でジョブを起動するため未使用だが、同一イメージで両モードを賄う。
+COPY jobs/ ./jobs/
 
 # 非root ユーザーで実行し、コンテナ侵害時の権限を最小化する。
 # COPY 済みファイルは world-readable のため appuser から読み取り可能。
