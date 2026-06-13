@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 from google.cloud import firestore
 
-from shared.models import Article, Podcast, Recommendation, UserPrefs
+from shared.models import Article, Podcast, PodcastCache, Recommendation, UserPrefs
 from shared.utils import article_id_for_url
 
 
@@ -116,6 +116,69 @@ class FirestoreClient:
             .stream()
         )
         return len(docs) > 0
+
+    # ---------- Podcast cache (cross-user) ----------
+
+    def get_podcast_cache(self, cache_key: str) -> PodcastCache | None:
+        """podcastCache/{cache_key} を O(1) 直引きする。
+
+        Podcast.id / Article.id と同じ流儀で cache_key を doc.id から復元する。
+        """
+        doc = self._db.collection("podcastCache").document(cache_key).get()
+        if not doc.exists:
+            return None
+        return PodcastCache(**{**doc.to_dict(), "cache_key": doc.id})
+
+    def save_podcast_cache(self, cache: PodcastCache) -> None:
+        """podcastCache/{cache_key} を全置換で書き込む。
+
+        save_podcast / save_article と同じ mode='json' 流儀で datetime を
+        ISO 文字列に変換し、Firestore との型不整合を防ぐ。
+        cache_key は doc-id として使うためペイロードから除外する。
+        """
+        data = cache.model_dump(mode="json")
+        data.pop("cache_key")
+        self._db.collection("podcastCache").document(cache.cache_key).set(data)
+
+    def try_acquire_cache(
+        self,
+        cache_key: str,
+        article_id: str,
+        difficulty: str,
+        language: str,
+    ) -> bool:
+        """podcastCache の processing 確保をトランザクションで原子的に行う。
+
+        try_acquire_job_lock と同型の read→条件付き write パターン。
+        - 不存在 / failed → processing を書き込み True を返す（生成権取得）。
+        - processing / completed → 書き込まず False を返す（スキップ）。
+
+        True を返した呼び出し元が生成権を持ち、生成後に save_podcast_cache で
+        completed / failed に遷移させる責務を負う。
+        """
+        ref = self._db.collection("podcastCache").document(cache_key)
+        now = datetime.now(timezone.utc)
+
+        @firestore.transactional
+        def _acquire(transaction) -> bool:
+            snapshot = ref.get(transaction=transaction)
+            if snapshot.exists:
+                status = snapshot.to_dict().get("status")
+                if status in ("processing", "completed"):
+                    return False
+            transaction.set(
+                ref,
+                {
+                    "article_id": article_id,
+                    "difficulty": difficulty,
+                    "language": language,
+                    "status": "processing",
+                    "created_at": now,
+                },
+            )
+            return True
+
+        return _acquire(self._db.transaction())
 
     # ---------- Job locks (debounce) ----------
 
