@@ -1,6 +1,8 @@
 """Firestore CRUD helpers for all domain entities."""
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 from google.cloud import firestore
 
 from shared.models import Article, Podcast, Recommendation, UserPrefs
@@ -114,3 +116,36 @@ class FirestoreClient:
             .stream()
         )
         return len(docs) > 0
+
+    # ---------- Job locks (debounce) ----------
+
+    def try_acquire_job_lock(
+        self, user_id: str, job_name: str, ttl_seconds: int
+    ) -> bool:
+        """ジョブ起動の debounce ロックを原子的に取得する。
+
+        TTL 内に有効なロックが既にあれば False を返す（多重起動の抑止）。
+        トランザクションで read→条件付き write を行い、複数 api インスタンスが
+        同時に同じジョブを起動するレースを防ぐ。
+
+        ジョブ完了時の明示的な解放は行わず、TTL 失効による自然解放（debounce）とする。
+        ジョブ側が starred/dismissed の全件を都度走査するため、ウィンドウ内の連続操作を
+        1 回の実行へまとめても取りこぼさない。
+        """
+        doc_id = f"{user_id}_{job_name}"
+        ref = self._db.collection("jobLocks").document(doc_id)
+        now = datetime.now(timezone.utc)
+
+        @firestore.transactional
+        def _acquire(transaction) -> bool:
+            snapshot = ref.get(transaction=transaction)
+            if snapshot.exists:
+                expires_at = snapshot.to_dict().get("expires_at")
+                if expires_at and expires_at > now:
+                    return False
+            transaction.set(
+                ref, {"expires_at": now + timedelta(seconds=ttl_seconds)}
+            )
+            return True
+
+        return _acquire(self._db.transaction())
