@@ -5,6 +5,18 @@
 from __future__ import annotations
 
 import hashlib
+import re
+
+
+def slugify(value: str) -> str:
+    """表示名から Firestore doc-id 用の slug を生成する。
+
+    英数字以外を区切り `-` に畳み込み、小文字化する（例: "Wired (Technology)" → "wired-technology"）。
+    featuredSites のドキュメントキーに使う。英数字が一切残らない場合は URL ハッシュ等の
+    別キーを呼び出し側で用意する想定だが、現状の英語サイト名では発生しない。
+    """
+    slug = re.sub(r"[^a-zA-Z0-9]+", "-", value).strip("-").lower()
+    return slug
 
 
 def article_id_for_url(url: str) -> str:

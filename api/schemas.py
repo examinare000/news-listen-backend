@@ -79,3 +79,30 @@ class RssSourcesResponse(BaseModel):
 class ActionResponse(BaseModel):
     status: str
     article_id: str
+
+
+class FeaturedSiteResponse(BaseModel):
+    id: str
+    name: str
+    url: str
+    thumbnail_url: str | None = None
+    description: str | None = None
+
+
+class FeaturedSitesResponse(BaseModel):
+    sites: list[FeaturedSiteResponse]
+
+
+class FeaturedSiteRequest(BaseModel):
+    """管理用おすすめサイト登録/更新リクエスト。"""
+
+    name: str
+    # RssSourceRequest と同様 HttpUrl で SSRF リスクを軽減する
+    url: HttpUrl
+    thumbnail_url: HttpUrl | None = None
+    description: str | None = None
+    order: int = 0
+
+
+class OnboardingStatusResponse(BaseModel):
+    onboarding_completed: bool

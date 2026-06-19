@@ -5,7 +5,14 @@ from datetime import datetime, timedelta, timezone
 
 from google.cloud import firestore
 
-from shared.models import Article, Podcast, PodcastCache, Recommendation, UserPrefs
+from shared.models import (
+    Article,
+    FeaturedSite,
+    Podcast,
+    PodcastCache,
+    Recommendation,
+    UserPrefs,
+)
 from shared.utils import article_id_for_url
 
 
@@ -63,6 +70,38 @@ class FirestoreClient:
         self._db.collection("userPrefs").document(user_id).set(
             {"dismissed_article_ids": firestore.ArrayUnion([article_id])}, merge=True
         )
+
+    # ---------- Featured sites (global) ----------
+
+    def get_featured_sites(self) -> list[FeaturedSite]:
+        """おすすめサイトを order 昇順で全件取得する。
+
+        get_recent_articles と同じ order_by ストリーム流儀。id は doc.id から復元する。
+        """
+        docs = (
+            self._db.collection("featuredSites")
+            .order_by("order")
+            .stream()
+        )
+        return [FeaturedSite(**{**doc.to_dict(), "id": doc.id}) for doc in docs]
+
+    def get_featured_site(self, site_id: str) -> FeaturedSite | None:
+        doc = self._db.collection("featuredSites").document(site_id).get()
+        if not doc.exists:
+            return None
+        return FeaturedSite(**{**doc.to_dict(), "id": doc.id})
+
+    def save_featured_site(self, site: FeaturedSite) -> None:
+        """featuredSites/{id} を全置換で書き込む。
+
+        save_podcast / save_article と同じく id は doc-id として使うためペイロードから除外する。
+        """
+        data = site.model_dump(mode="json")
+        data.pop("id")
+        self._db.collection("featuredSites").document(site.id).set(data)
+
+    def delete_featured_site(self, site_id: str) -> None:
+        self._db.collection("featuredSites").document(site_id).delete()
 
     # ---------- Recommendations ----------
 

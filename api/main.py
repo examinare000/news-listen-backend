@@ -6,7 +6,7 @@ import os
 from fastapi import FastAPI, HTTPException, Security, status
 from fastapi.security.api_key import APIKeyHeader
 
-from api.routers import articles, feed, podcasts, settings
+from api.routers import admin, articles, feed, podcasts, settings
 
 _logger = logging.getLogger(__name__)
 
@@ -34,6 +34,8 @@ app.include_router(feed.router, prefix="", dependencies=[Security(verify_api_key
 app.include_router(articles.router, prefix="", dependencies=[Security(verify_api_key)])
 app.include_router(podcasts.router, prefix="", dependencies=[Security(verify_api_key)])
 app.include_router(settings.router, prefix="", dependencies=[Security(verify_api_key)])
+# 管理用 CRUD。専用 admin ロールは無く共有 X-API-Key で保護する（admin.py 冒頭コメント参照）。
+app.include_router(admin.router, prefix="", dependencies=[Security(verify_api_key)])
 
 
 @app.get("/health")

@@ -44,6 +44,24 @@ class UserPrefs(BaseModel):
     default_playback_speed: float = 1.0
     digest_enabled: bool = True
     digest_article_count: int = 5
+    # 初回オンボーディング（おすすめサイト追加ステップ）の完了フラグ。
+    # 既存ドキュメントには存在しないため default=False で後方互換を保つ。
+    onboarding_completed: bool = False
+
+
+class FeaturedSite(BaseModel):
+    """システム提供のおすすめサイト。
+
+    Firestore コレクション `featuredSites/{id}`（グローバル・ユーザー横断）に対応する。
+    `id` はドキュメントキー（slug）。表示順は `order` 昇順で制御する。
+    """
+
+    id: str
+    name: str
+    url: str
+    thumbnail_url: str | None = None
+    description: str | None = None
+    order: int = 0
 
 
 class RecommendedArticle(BaseModel):
