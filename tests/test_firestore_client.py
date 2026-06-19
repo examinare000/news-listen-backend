@@ -134,6 +134,70 @@ def test_get_podcast_returns_none_when_not_found(mock_firestore_db):
     assert result is None
 
 
+# ---------- Featured sites (global) ----------
+
+
+def test_get_featured_sites_orders_by_order(mock_firestore_db):
+    """get_featured_sites が order 昇順でストリームし、id を doc.id から復元する。"""
+    from shared.firestore_client import FirestoreClient
+    client = FirestoreClient()
+
+    doc = MagicMock()
+    doc.id = "the-verge"
+    doc.to_dict.return_value = {
+        "name": "The Verge",
+        "url": "https://www.theverge.com/rss/index.xml",
+        "thumbnail_url": None,
+        "description": None,
+        "order": 0,
+    }
+    order_by = mock_firestore_db.collection.return_value.order_by
+    order_by.return_value.stream.return_value = [doc]
+
+    sites = client.get_featured_sites()
+
+    mock_firestore_db.collection.assert_called_with("featuredSites")
+    order_by.assert_called_with("order")
+    assert len(sites) == 1
+    assert sites[0].id == "the-verge"
+
+
+def test_save_featured_site_pops_id_and_sets(mock_firestore_db):
+    """save_featured_site は id を doc-id にして payload から除外する（save_podcast と同流儀）。"""
+    from shared.firestore_client import FirestoreClient
+    from shared.models import FeaturedSite
+    client = FirestoreClient()
+
+    mock_doc_ref = MagicMock()
+    mock_firestore_db.collection.return_value.document.return_value = mock_doc_ref
+
+    site = FeaturedSite(
+        id="techcrunch", name="TechCrunch", url="https://techcrunch.com/feed/", order=1
+    )
+    client.save_featured_site(site)
+
+    mock_firestore_db.collection.assert_called_with("featuredSites")
+    mock_firestore_db.collection.return_value.document.assert_called_with("techcrunch")
+    saved_data = mock_doc_ref.set.call_args[0][0]
+    assert "id" not in saved_data
+    assert saved_data["name"] == "TechCrunch"
+    assert saved_data["order"] == 1
+
+
+def test_delete_featured_site_calls_delete(mock_firestore_db):
+    from shared.firestore_client import FirestoreClient
+    client = FirestoreClient()
+
+    mock_doc_ref = MagicMock()
+    mock_firestore_db.collection.return_value.document.return_value = mock_doc_ref
+
+    client.delete_featured_site("techcrunch")
+
+    mock_firestore_db.collection.assert_called_with("featuredSites")
+    mock_firestore_db.collection.return_value.document.assert_called_with("techcrunch")
+    mock_doc_ref.delete.assert_called_once()
+
+
 # ---------- Job locks (debounce) ----------
 
 def _setup_lock_mock(mock_firestore_db, snapshot):

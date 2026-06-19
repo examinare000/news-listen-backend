@@ -1,5 +1,5 @@
-"""GET/POST/DELETE /settings/sources のテスト。"""
-from shared.models import RssSource, UserPrefs
+"""GET/POST/DELETE /settings/sources と featured-sources / onboarding のテスト。"""
+from shared.models import FeaturedSite, RssSource, UserPrefs
 
 
 def test_get_sources_returns_default_sources(api_client, mock_db):
@@ -82,3 +82,79 @@ def test_delete_source_returns_404_when_not_found(api_client, mock_db):
         headers={"X-API-Key": "test-key"},
     )
     assert response.status_code == 404
+
+
+# ---------- GET /settings/featured-sources ----------
+
+
+def test_get_featured_sources_returns_empty_list(api_client, mock_db):
+    mock_db.get_featured_sites.return_value = []
+
+    response = api_client.get(
+        "/settings/featured-sources", headers={"X-API-Key": "test-key"}
+    )
+    assert response.status_code == 200
+    assert response.json()["sites"] == []
+
+
+def test_get_featured_sources_returns_sites_in_order(api_client, mock_db):
+    # get_featured_sites は order 昇順で返す責務（ここではその並びをそのまま検証）
+    mock_db.get_featured_sites.return_value = [
+        FeaturedSite(
+            id="the-verge",
+            name="The Verge",
+            url="https://www.theverge.com/rss/index.xml",
+            thumbnail_url="https://www.theverge.com/favicon.ico",
+            description="テクノロジー全般",
+            order=0,
+        ),
+        FeaturedSite(
+            id="techcrunch",
+            name="TechCrunch",
+            url="https://techcrunch.com/feed/",
+            order=1,
+        ),
+    ]
+
+    response = api_client.get(
+        "/settings/featured-sources", headers={"X-API-Key": "test-key"}
+    )
+    assert response.status_code == 200
+    sites = response.json()["sites"]
+    assert [s["id"] for s in sites] == ["the-verge", "techcrunch"]
+    assert sites[0]["thumbnail_url"] == "https://www.theverge.com/favicon.ico"
+    # order はレスポンススキーマに含めない（表示順は配列順で表現する）
+    assert "order" not in sites[0]
+    assert sites[1]["thumbnail_url"] is None
+
+
+# ---------- GET/POST /settings/onboarding ----------
+
+
+def test_get_onboarding_defaults_to_false(api_client, mock_db):
+    mock_db.get_user_prefs.return_value = UserPrefs(
+        user_id="user1", default_difficulty="toeic_900"
+    )
+
+    response = api_client.get("/settings/onboarding", headers={"X-API-Key": "test-key"})
+    assert response.status_code == 200
+    assert response.json()["onboarding_completed"] is False
+
+
+def test_complete_onboarding_sets_flag_true_and_persists(api_client, mock_db):
+    mock_db.get_user_prefs.return_value = UserPrefs(
+        user_id="user1", default_difficulty="toeic_900"
+    )
+
+    response = api_client.post(
+        "/settings/onboarding/complete", headers={"X-API-Key": "test-key"}
+    )
+    assert response.status_code == 200
+    assert response.json()["onboarding_completed"] is True
+
+    # 永続化: save_user_prefs に onboarding_completed=True が渡る
+    mock_db.save_user_prefs.assert_called_once()
+    saved = mock_db.save_user_prefs.call_args[0][0]
+    assert saved.onboarding_completed is True
+    # 他の必須フィールドが保持されている（全置換更新でも欠落しない）
+    assert saved.default_difficulty == "toeic_900"
