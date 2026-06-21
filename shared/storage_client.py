@@ -47,7 +47,13 @@ class StorageClient:
         bucket = self._client.bucket(self._bucket_name)
         blob = bucket.blob(blob_name)
 
-        credentials, _ = google_auth_default()
+        # スコープを明示する。SA 鍵ファイルを ADC として読む環境（ローカル / Docker）では
+        # google.auth.default() がスコープ未設定の認証情報を返し、refresh が空スコープの
+        # JWT grant を送って "invalid_scope" で失敗するため。cloud-platform スコープは
+        # IAM signBlob と Storage 双方をカバーし、Cloud Run のコンピュート認証情報でも無害。
+        credentials, _ = google_auth_default(
+            scopes=["https://www.googleapis.com/auth/cloud-platform"]
+        )
         # service_account_email / token は refresh 後に確定する
         credentials.refresh(AuthRequest())
 
