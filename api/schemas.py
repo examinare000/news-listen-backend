@@ -1,9 +1,9 @@
 """Pydantic request/response モデル。"""
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
-from pydantic import BaseModel, HttpUrl
+from pydantic import BaseModel, Field, HttpUrl
 
 if TYPE_CHECKING:
     from shared.models import Podcast
@@ -106,3 +106,61 @@ class FeaturedSiteRequest(BaseModel):
 
 class OnboardingStatusResponse(BaseModel):
     onboarding_completed: bool
+
+
+# ── 認証・ユーザー管理 ────────────────────────────────────────────
+# パスワードは bcrypt の 72 バイト制限に合わせ最大長を制限する。
+_PASSWORD_MIN = 8
+_PASSWORD_MAX = 72
+
+
+class LoginRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=1, max_length=_PASSWORD_MAX)
+
+
+class UserResponse(BaseModel):
+    """ユーザー公開情報。password_hash は決して含めない。"""
+
+    username: str
+    role: Literal["admin", "user"]
+    display_name: str
+
+
+class LoginResponse(BaseModel):
+    """ログイン成功時のレスポンス。
+
+    token は iOS など Cookie を使わないクライアント向け。Web は httpOnly Cookie
+    （Set-Cookie）で受け取るため token をストレージに保存する必要はない。
+    """
+
+    token: str
+    user: UserResponse
+
+
+class PasswordChangeRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=_PASSWORD_MAX)
+    new_password: str = Field(min_length=_PASSWORD_MIN, max_length=_PASSWORD_MAX)
+
+
+class ProfileUpdateRequest(BaseModel):
+    display_name: str = Field(min_length=1, max_length=64)
+
+
+class UserCreateRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=_PASSWORD_MIN, max_length=_PASSWORD_MAX)
+    display_name: str | None = Field(default=None, max_length=64)
+    role: Literal["admin", "user"] = "user"
+
+
+class UserUpdateRequest(BaseModel):
+    """管理者によるユーザー更新。指定フィールドのみ変更する。"""
+
+    role: Literal["admin", "user"] | None = None
+    new_password: str | None = Field(default=None, min_length=_PASSWORD_MIN, max_length=_PASSWORD_MAX)
+    display_name: str | None = Field(default=None, max_length=64)
+
+
+class UserListResponse(BaseModel):
+    users: list[UserResponse]
