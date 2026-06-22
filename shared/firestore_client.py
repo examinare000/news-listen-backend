@@ -138,6 +138,20 @@ class FirestoreClient:
     def delete_session(self, session_id: str) -> None:
         self._db.collection("sessions").document(session_id).delete()
 
+    def delete_sessions_for_user(self, user_id: str) -> int:
+        """指定ユーザーの全セッションを削除し、削除件数を返す（強制ログアウト）。
+
+        ユーザー削除・降格・管理者によるパスワードリセット時に呼び、TTL 満了を待たずに
+        既存セッションを失効させる。失効しないと削除済み/降格済みユーザーが TTL（既定7日）
+        の間アクセスを継続できてしまう。
+        """
+        docs = list(
+            self._db.collection("sessions").where("user_id", "==", user_id).stream()
+        )
+        for doc in docs:
+            doc.reference.delete()
+        return len(docs)
+
     # ---------- Featured sites (global) ----------
 
     def get_featured_sites(self) -> list[FeaturedSite]:
