@@ -18,6 +18,44 @@ CacheStatus = Literal["processing", "completed", "failed"]
 # 新しい難易度を追加する場合は両ファイルを同時に変更すること。
 DifficultyLevel = Literal["toeic_600", "toeic_900", "ielts_55", "ielts_7", "eiken_2", "eiken_p1"]
 
+# ユーザーの権限ロール。admin はユーザー管理 API（/admin/users）を操作できる。
+UserRole = Literal["admin", "user"]
+
+
+class User(BaseModel):
+    """アプリ利用ユーザー。
+
+    Firestore コレクション `users/{username}` に対応する。
+    - `username`: ログイン ID 兼ドキュメントキー（不変・小文字スラッグ）。
+    - `user_id`: 各種データ（userPrefs/podcasts/recommendations）のパーティションキー。
+      username とは分離し、ログイン ID を変更してもデータ参照が壊れないようにする（現状 username は不変）。
+    - `password_hash`: bcrypt ハッシュ。平文は決して保存しない。API レスポンスにも含めない。
+    """
+
+    username: str
+    user_id: str
+    password_hash: str
+    role: UserRole = "user"
+    display_name: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class Session(BaseModel):
+    """ログインセッション。
+
+    Firestore コレクション `sessions/{session_id}` に対応する。
+    `session_id` は発行トークンの SHA-256 ハッシュ（生トークンは保存しない）。
+    リクエスト毎に存在と `expires_at` を検証し、期限切れは無効として扱う。
+    """
+
+    session_id: str
+    user_id: str
+    username: str
+    role: UserRole
+    created_at: datetime
+    expires_at: datetime
+
 
 class Article(BaseModel):
     id: str
