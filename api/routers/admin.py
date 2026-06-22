@@ -7,19 +7,31 @@
 管理操作も同じ運用者が行うため許容する。将来必要になれば `ADMIN_API_KEY` を分離し、本ルーターのみ
 別キーで保護する余地を残す。
 """
+import uuid
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException
 
-from api.dependencies import get_firestore_client
+from api.dependencies import get_firestore_client, require_admin
 from api.schemas import (
     FeaturedSiteRequest,
     FeaturedSiteResponse,
     FeaturedSitesResponse,
+    UserCreateRequest,
+    UserListResponse,
+    UserResponse,
+    UserUpdateRequest,
 )
 from shared.firestore_client import FirestoreClient
-from shared.models import FeaturedSite
-from shared.utils import slugify
+from shared.models import FeaturedSite, User
+from shared.security import hash_password
+from shared.utils import normalize_username, slugify
 
 router = APIRouter()
+
+
+def _user_to_response(user: User) -> UserResponse:
+    return UserResponse(username=user.username, role=user.role, display_name=user.display_name)
 
 
 def _to_response(site: FeaturedSite) -> FeaturedSiteResponse:
@@ -90,3 +102,79 @@ def delete_featured_site(
         raise HTTPException(status_code=404, detail="Featured site not found")
     db.delete_featured_site(site_id)
     return {"status": "deleted", "id": site_id}
+
+
+# ── ユーザー管理（admin ロール必須） ──────────────────────────────
+# featured-sites と異なり require_admin で保護する。共有 X-API-Key（ゲートウェイ）に
+# 加えて、ログインユーザーが admin ロールであることを要求する。
+
+
+@router.get("/admin/users", response_model=UserListResponse, dependencies=[Depends(require_admin)])
+def list_users(db: FirestoreClient = Depends(get_firestore_client)):
+    return UserListResponse(users=[_user_to_response(u) for u in db.list_users()])
+
+
+@router.post(
+    "/admin/users",
+    response_model=UserResponse,
+    status_code=201,
+    dependencies=[Depends(require_admin)],
+)
+def create_user(
+    request: UserCreateRequest,
+    db: FirestoreClient = Depends(get_firestore_client),
+):
+    """ユーザーを新規作成する。username は正規化して doc-id にする。"""
+    username = normalize_username(request.username)
+    if db.get_user(username) is not None:
+        raise HTTPException(status_code=409, detail="User already exists")
+    now = datetime.now(timezone.utc)
+    user = User(
+        username=username,
+        # user_id はデータパーティションキー。username とは独立した不変 ID を採番する。
+        user_id=uuid.uuid4().hex,
+        password_hash=hash_password(request.password),
+        role=request.role,
+        display_name=request.display_name or username,
+        created_at=now,
+        updated_at=now,
+    )
+    db.save_user(user)
+    return _user_to_response(user)
+
+
+@router.patch(
+    "/admin/users/{username}",
+    response_model=UserResponse,
+    dependencies=[Depends(require_admin)],
+)
+def update_user(
+    username: str,
+    request: UserUpdateRequest,
+    db: FirestoreClient = Depends(get_firestore_client),
+):
+    """ロール変更・パスワードリセット・表示名変更。指定フィールドのみ更新する。"""
+    user = db.get_user(normalize_username(username))
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    if request.role is not None:
+        user.role = request.role
+    if request.new_password is not None:
+        user.password_hash = hash_password(request.new_password)
+    if request.display_name is not None:
+        user.display_name = request.display_name
+    user.updated_at = datetime.now(timezone.utc)
+    db.save_user(user)
+    return _user_to_response(user)
+
+
+@router.delete("/admin/users/{username}", dependencies=[Depends(require_admin)])
+def delete_user(
+    username: str,
+    db: FirestoreClient = Depends(get_firestore_client),
+):
+    normalized = normalize_username(username)
+    if db.get_user(normalized) is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    db.delete_user(normalized)
+    return {"status": "deleted", "username": normalized}
