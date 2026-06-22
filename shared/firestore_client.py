@@ -11,9 +11,10 @@ from shared.models import (
     Podcast,
     PodcastCache,
     Recommendation,
+    Session,
+    User,
     UserPrefs,
 )
-from shared.utils import article_id_for_url
 
 
 class FirestoreClient:
@@ -70,6 +71,72 @@ class FirestoreClient:
         self._db.collection("userPrefs").document(user_id).set(
             {"dismissed_article_ids": firestore.ArrayUnion([article_id])}, merge=True
         )
+
+    # ---------- Users ----------
+
+    def get_user(self, username: str) -> User | None:
+        """users/{username} を O(1) 直引きする。username は doc-id。"""
+        doc = self._db.collection("users").document(username).get()
+        if not doc.exists:
+            return None
+        return User(**{**doc.to_dict(), "username": doc.id})
+
+    def get_user_by_user_id(self, user_id: str) -> User | None:
+        """user_id（パーティションキー）からユーザーを逆引きする。"""
+        docs = list(
+            self._db.collection("users")
+            .where("user_id", "==", user_id)
+            .limit(1)
+            .stream()
+        )
+        if not docs:
+            return None
+        doc = docs[0]
+        return User(**{**doc.to_dict(), "username": doc.id})
+
+    def list_users(self) -> list[User]:
+        """全ユーザーを username 昇順で取得する（管理用）。"""
+        docs = self._db.collection("users").order_by("__name__").stream()
+        return [User(**{**doc.to_dict(), "username": doc.id}) for doc in docs]
+
+    def save_user(self, user: User) -> None:
+        """users/{username} を全置換で書き込む。
+
+        save_featured_site と同じく username は doc-id として使うためペイロードから除外する。
+        """
+        data = user.model_dump(mode="json")
+        data.pop("username")
+        self._db.collection("users").document(user.username).set(data)
+
+    def delete_user(self, username: str) -> None:
+        self._db.collection("users").document(username).delete()
+
+    # ---------- Sessions ----------
+
+    def create_session(self, session: Session) -> None:
+        """sessions/{session_id} を書き込む。session_id は doc-id（トークンのハッシュ）。"""
+        data = session.model_dump(mode="json")
+        data.pop("session_id")
+        self._db.collection("sessions").document(session.session_id).set(data)
+
+    def get_session(self, session_id: str) -> Session | None:
+        """セッションを取得する。期限切れなら削除して None を返す。
+
+        session_id は受領トークンの SHA-256 ハッシュ（呼び出し側で算出済み）。
+        """
+        ref = self._db.collection("sessions").document(session_id)
+        doc = ref.get()
+        if not doc.exists:
+            return None
+        session = Session(**{**doc.to_dict(), "session_id": doc.id})
+        if session.expires_at <= datetime.now(timezone.utc):
+            # 期限切れセッションは遅延削除する（次回参照を高速化し、ゴミを残さない）。
+            ref.delete()
+            return None
+        return session
+
+    def delete_session(self, session_id: str) -> None:
+        self._db.collection("sessions").document(session_id).delete()
 
     # ---------- Featured sites (global) ----------
 

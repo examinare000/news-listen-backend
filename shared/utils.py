@@ -19,6 +19,15 @@ def slugify(value: str) -> str:
     return slug
 
 
+def normalize_username(value: str) -> str:
+    """ログイン ID（username）を正規化する。
+
+    前後空白を除去し小文字化する。これを doc-id 兼ログイン ID として用い、
+    投入・ログイン・管理操作で同一の正規化を共有して大文字小文字の不一致を防ぐ。
+    """
+    return value.strip().lower()
+
+
 def article_id_for_url(url: str) -> str:
     """記事 URL から決定論的な記事 ID を生成する。
 

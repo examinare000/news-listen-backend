@@ -6,7 +6,7 @@ import os
 from fastapi import FastAPI, HTTPException, Security, status
 from fastapi.security.api_key import APIKeyHeader
 
-from api.routers import admin, articles, feed, podcasts, settings
+from api.routers import admin, articles, auth, feed, podcasts, settings
 
 _logger = logging.getLogger(__name__)
 
@@ -30,6 +30,9 @@ async def verify_api_key(api_key: str = Security(API_KEY_HEADER)):
     return api_key
 
 
+# 認証ルーター。ゲートウェイの X-API-Key 下にマウントする。login/logout はセッション不要、
+# /auth/me 等はルーター内の get_current_user 依存でセッションを要求する。
+app.include_router(auth.router, prefix="", dependencies=[Security(verify_api_key)])
 app.include_router(feed.router, prefix="", dependencies=[Security(verify_api_key)])
 app.include_router(articles.router, prefix="", dependencies=[Security(verify_api_key)])
 app.include_router(podcasts.router, prefix="", dependencies=[Security(verify_api_key)])
