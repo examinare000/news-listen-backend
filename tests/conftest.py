@@ -69,11 +69,16 @@ def api_client(mock_db, mock_storage, mock_job_trigger):
             get_firestore_client,
             get_job_trigger,
             get_storage_client,
+            get_user_id,
         )
         importlib.reload(m)
         # lru_cache をバイパスして各テストに独立したモックを注入する
         m.app.dependency_overrides[get_firestore_client] = lambda: mock_db
         m.app.dependency_overrides[get_storage_client] = lambda: mock_storage
         m.app.dependency_overrides[get_job_trigger] = lambda: mock_job_trigger
+        # get_user_id はセッション由来へ変更されたため、既存ルーターテストでは固定 user_id を注入する。
+        # 認証フロー自体（get_current_user／get_session）を検証するテストは mock_db.get_session を
+        # 設定し、本オーバーライドに依存しない auth/admin エンドポイントを直接叩く。
+        m.app.dependency_overrides[get_user_id] = lambda: "user1"
         yield TestClient(m.app)
         m.app.dependency_overrides.clear()
