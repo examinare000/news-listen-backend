@@ -3,10 +3,25 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Literal
 
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, Field, HttpUrl, field_validator
 
 if TYPE_CHECKING:
     from shared.models import Podcast
+
+
+def _ensure_safe_url(value) -> None:
+    """値が SSRF 検査に合格することを確認する（登録APIの多層防御）。
+
+    url_guard.validate_url でスキーム・ホスト名・解決IP を検証し、危険なら
+    Pydantic が 422 に変換できるよう ValueError へ正規化する。各リクエストモデルの
+    field_validator から共通利用し、検証ロジックの重複を避ける。
+    """
+    from shared.url_guard import validate_url, UnsafeUrlError
+
+    try:
+        validate_url(str(value))
+    except UnsafeUrlError as e:
+        raise ValueError(f"unsafe url: {e.reason}")
 
 
 class ArticleResponse(BaseModel):
@@ -69,6 +84,13 @@ class RssSourceRequest(BaseModel):
     # spec-reviewer: HttpUrl で SSRF リスクを軽減する
     url: HttpUrl
 
+    @field_validator("url")
+    @classmethod
+    def _validate_url_safe(cls, v):
+        """URL が SSRF 検査に合格することを確認（プライベートIP・ループバック等は拒否）。"""
+        _ensure_safe_url(v)
+        return v
+
 
 class RssSourcesResponse(BaseModel):
     # list[dict[str, str]] で OpenAPI スキーマに型情報を反映させる
@@ -102,6 +124,22 @@ class FeaturedSiteRequest(BaseModel):
     thumbnail_url: HttpUrl | None = None
     description: str | None = None
     order: int = 0
+
+    @field_validator("url")
+    @classmethod
+    def _validate_url_safe(cls, v):
+        """URL が SSRF 検査に合格することを確認。"""
+        _ensure_safe_url(v)
+        return v
+
+    @field_validator("thumbnail_url")
+    @classmethod
+    def _validate_thumbnail_url_safe(cls, v):
+        """thumbnail_url が SSRF 検査に合格することを確認（None は許容）。"""
+        if v is None:
+            return v
+        _ensure_safe_url(v)
+        return v
 
 
 class OnboardingStatusResponse(BaseModel):
