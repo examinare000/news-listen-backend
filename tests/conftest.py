@@ -1,6 +1,7 @@
 """テスト共有フィクスチャ。"""
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 from fastapi.testclient import TestClient
 
 
@@ -61,9 +62,21 @@ def api_client(mock_db, mock_storage, mock_job_trigger):
             mock_db.get_podcast.return_value = pod
             mock_storage.generate_audio_url.return_value = "https://..."
             response = api_client.get("/podcasts/abc", ...)
+
+    LOGIN_RATELIMIT_MAX_ATTEMPTS はデフォルト 0（無効化）。
+    テスト側で明示的に有効化する場合は patch.dict で環境変数をセットして
+    モジュールをリロードすること。
     """
-    with patch.dict("os.environ", {"API_KEY": "test-key", "USER_ID": "user1"}):
+    with patch.dict(
+        "os.environ",
+        {
+            "API_KEY": "test-key",
+            "USER_ID": "user1",
+            "LOGIN_RATELIMIT_MAX_ATTEMPTS": "0",
+        },
+    ):
         import importlib
+
         import api.main as m
         from api.dependencies import (
             get_firestore_client,
