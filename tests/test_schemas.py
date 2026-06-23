@@ -1,8 +1,12 @@
 """api.schemas の単体テスト。"""
 from datetime import datetime, timezone
+from unittest.mock import patch
+
+import pytest
+from pydantic import ValidationError
 
 from shared.models import Podcast
-from api.schemas import PodcastResponse
+from api.schemas import PodcastResponse, RssSourceRequest, FeaturedSiteRequest
 
 
 NOW = datetime(2026, 5, 31, 12, 0, 0, tzinfo=timezone.utc)
@@ -66,3 +70,72 @@ def test_podcast_response_from_podcast_uses_audio_url_override():
     signed_url = "https://storage.googleapis.com/bucket/signed-url-xyz"
     response = PodcastResponse.from_podcast(podcast, audio_url=signed_url)
     assert response.audio_url == signed_url
+
+
+# === SSRF 対策：URL 検証 ===
+
+
+def test_rss_source_request_accepts_safe_url():
+    """RssSourceRequest が安全 URL を受理すること（validate_url パッチ）。"""
+    with patch("shared.url_guard.validate_url") as mock_validate:
+        mock_validate.return_value = ["93.184.216.34"]
+        req = RssSourceRequest(name="example", url="https://example.com/rss")
+        assert req.name == "example"
+        # HttpUrl は末尾スラッシュを保持 or 追加する可能性がある
+        assert "example.com" in str(req.url)
+
+
+def test_rss_source_request_rejects_unsafe_url():
+    """RssSourceRequest が危険 URL を拒否して ValidationError を raise すること。"""
+    from shared.url_guard import UnsafeUrlError
+
+    with patch("shared.url_guard.validate_url") as mock_validate:
+        mock_validate.side_effect = UnsafeUrlError("private_ip")
+        with pytest.raises(ValidationError) as exc_info:
+            RssSourceRequest(name="example", url="http://169.254.169.254/rss")
+        # ValidationError に 'unsafe url' 関連のメッセージが含まれることを確認
+        assert "unsafe url" in str(exc_info.value).lower() or "private_ip" in str(exc_info.value).lower()
+
+
+def test_featured_site_request_accepts_safe_url():
+    """FeaturedSiteRequest が安全 URL を受理すること。"""
+    with patch("shared.url_guard.validate_url") as mock_validate:
+        mock_validate.return_value = ["93.184.216.34"]
+        req = FeaturedSiteRequest(
+            name="site",
+            url="https://example.com",
+            thumbnail_url="https://example.com/thumb.png",
+            description="Test site",
+        )
+        assert req.name == "site"
+        # HttpUrl は末尾スラッシュを保持 or 追加する可能性がある
+        assert "example.com" in str(req.url)
+
+
+def test_featured_site_request_rejects_unsafe_url():
+    """FeaturedSiteRequest が危険 URL を拒否して ValidationError を raise すること。"""
+    from shared.url_guard import UnsafeUrlError
+
+    with patch("shared.url_guard.validate_url") as mock_validate:
+        mock_validate.side_effect = UnsafeUrlError("private_ip")
+        with pytest.raises(ValidationError):
+            FeaturedSiteRequest(
+                name="site",
+                url="http://10.0.0.1/site",
+                description="Internal site",
+            )
+
+
+def test_featured_site_request_skips_thumbnail_url_validation_when_none():
+    """FeaturedSiteRequest の thumbnail_url が None の場合，validate_url を呼ばないこと。"""
+    with patch("shared.url_guard.validate_url") as mock_validate:
+        mock_validate.return_value = ["93.184.216.34"]
+        FeaturedSiteRequest(
+            name="site",
+            url="https://example.com",
+            thumbnail_url=None,
+            description="Test site",
+        )
+        # url は検証されるが，thumbnail_url は None なので検証されない
+        # validate_url は 1 回だけ呼ばれる（url field のみ）
+        assert mock_validate.call_count == 1

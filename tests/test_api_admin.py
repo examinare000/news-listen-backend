@@ -1,5 +1,23 @@
 """管理用 /admin/featured-sites CRUD のテスト。"""
+import socket
+
+import pytest
+
 from shared.models import FeaturedSite
+
+
+@pytest.fixture(autouse=True)
+def _stub_dns(monkeypatch):
+    """SSRF バリデータの socket.getaddrinfo を公開 IP に固定する。
+
+    URL 登録時の field_validator が実 DNS を引くとテストがネットワーク依存・低速・
+    フレーキーになるため、外部依存の DNS をスタブ化する（検証ロジック自体は実行される）。
+    """
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))],
+    )
 
 
 def test_list_featured_sites(api_client, mock_db):
