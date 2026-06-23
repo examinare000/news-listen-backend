@@ -332,3 +332,110 @@ class FirestoreClient:
             return True
 
         return _acquire(self._db.transaction())
+
+    # ---------- Login rate limiting ----------
+
+    def check_login_lock(self, key: str, now: datetime | None = None) -> datetime | None:
+        """ログイン試行のロック状態を確認する。
+
+        key（IP or username）がロック中なら locked_until datetime を返す。
+        読み取りのみで、ロック中でなければ None を返す。
+
+        Args:
+            key: IP or username のハッシュ化キー（"ip:..." or "user:..."）
+            now: 現在時刻（デフォルト: UTC now）
+
+        Returns:
+            ロック中なら locked_until datetime、ロック中でなければ None
+        """
+        if now is None:
+            now = datetime.now(timezone.utc)
+
+        doc_id = f"loginAttempts_{key}"
+        ref = self._db.collection("loginAttempts").document(doc_id)
+        snapshot = ref.get()
+        if not snapshot.exists:
+            return None
+
+        data = snapshot.to_dict()
+        locked_until = data.get("locked_until")
+        if locked_until and locked_until > now:
+            return locked_until
+        return None
+
+    def register_failed_login(
+        self,
+        key: str,
+        now: datetime | None = None,
+        max_attempts: int = 5,
+        window_seconds: int = 900,
+        lockout_seconds: int = 900,
+    ) -> bool:
+        """失敗したログイン試行を記録し、閾値超過で新規ロックを設定する。
+
+        トランザクションで read→write を行い、複数インスタンスの同時アクセスに対応する。
+        ウィンドウ失効していれば count を 1 でリセット、内なら count を +1。
+        count >= max_attempts でロック状態を設定し、新規ロック時 True を返す。
+
+        Args:
+            key: IP or username のハッシュ化キー（"ip:..." or "user:..."）
+            now: 現在時刻（デフォルト: UTC now）
+            max_attempts: 閾値（最大試行回数）
+            window_seconds: 計数ウィンドウの長さ（秒）
+            lockout_seconds: ロック期間（秒）
+
+        Returns:
+            新規ロック発生なら True、閾値未超過なら False
+        """
+        if now is None:
+            now = datetime.now(timezone.utc)
+
+        doc_id = f"loginAttempts_{key}"
+        ref = self._db.collection("loginAttempts").document(doc_id)
+
+        @firestore.transactional
+        def _update(transaction) -> bool:
+            snapshot = ref.get(transaction=transaction)
+            data = snapshot.to_dict() if snapshot.exists else {}
+            count = data.get("count", 0)
+            window_start = data.get("window_start")
+
+            # ウィンドウ失効判定
+            if window_start is None or (now - window_start).total_seconds() > window_seconds:
+                # ウィンドウ失効。count をリセット
+                count = 1
+                window_start = now
+            else:
+                # ウィンドウ内。count を +1
+                count += 1
+
+            new_lock = False
+            locked_until = data.get("locked_until")
+
+            # 閾値超過でロック設定
+            if count >= max_attempts:
+                locked_until = now + timedelta(seconds=lockout_seconds)
+                new_lock = True
+
+            # トランザクション内で更新
+            transaction.set(
+                ref,
+                {
+                    "count": count,
+                    "window_start": window_start,
+                    "locked_until": locked_until,
+                },
+            )
+            return new_lock
+
+        return _update(self._db.transaction())
+
+    def clear_login_attempts(self, key: str) -> None:
+        """ログイン成功時に当該キーの試行カウンタをリセットする。
+
+        Args:
+            key: IP or username のハッシュ化キー（"ip:..." or "user:..."）
+        """
+        doc_id = f"loginAttempts_{key}"
+        ref = self._db.collection("loginAttempts").document(doc_id)
+        ref.delete()

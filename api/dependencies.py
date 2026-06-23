@@ -74,6 +74,25 @@ def _extract_session_token(request: Request) -> str | None:
     return cookie or None
 
 
+def get_client_ip(request: Request) -> str:
+    """リクエスト元 IP を取得する。
+
+    優先順: X-Forwarded-For ヘッダの左端（ロードバランサー / プロキシ経由時）
+    → request.client.host（直接接続時）。
+
+    X-Forwarded-For は詐称可能だが、本番環境で Cloud Run / Cloud Armor
+    経由であれば信頼できる。username 単位のレート制限と併用して多層防御を実施する。
+    """
+    xff = request.headers.get("X-Forwarded-For")
+    if xff:
+        # 複数 IP が含まれる場合は左端（元クライアント）を採用
+        return xff.split(",")[0].strip()
+    # フォールバック: request.client が None でも、エラーを避ける
+    if request.client:
+        return request.client.host
+    return "unknown"
+
+
 def get_current_user(
     request: Request,
     db: FirestoreClient = Depends(get_firestore_client),

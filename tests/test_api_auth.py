@@ -5,6 +5,7 @@ get_current_user は本物が動くため、認証が要るエンドポイント
 設定し、Authorization: Bearer ヘッダーでトークンを渡す。
 """
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 from shared.models import Session, User
 from shared.security import hash_password
@@ -152,3 +153,223 @@ class TestUpdateProfile:
         assert resp.json()["display_name"] == "New Name"
         saved = mock_db.save_user.call_args[0][0]
         assert saved.display_name == "New Name"
+
+
+class TestLoginRateLimit:
+    """ログイン試行のレートリミット（IP単位・username単位）のテスト。"""
+
+    def test_rate_limit_disabled_by_default(self, api_client, mock_db):
+        """しきい値が0なら、レートリミット機能は無効化される。"""
+        import os
+        with patch.dict(os.environ, {"LOGIN_RATELIMIT_MAX_ATTEMPTS": "0"}):
+            # モジュール再読み込みして env 値を反映
+            import importlib
+
+            import api.routers.auth as auth_module
+            importlib.reload(auth_module)
+
+            mock_db.get_user.return_value = _user(password="correct-horse")
+            mock_db.check_login_lock.return_value = None
+
+            resp = api_client.post(
+                "/auth/login",
+                json={"username": "alice", "password": "wrong"},
+                headers=API_HEADERS,
+            )
+
+            # 失敗でも check_login_lock は呼ばれない（機能無効）
+            mock_db.check_login_lock.assert_not_called()
+            assert resp.status_code == 401
+
+    def test_rate_limit_checks_ip_lock_before_auth(self, api_client, mock_db):
+        """IP がロック中なら、資格情報検証より前に 429 を返す。"""
+        import os
+        from datetime import datetime, timezone
+
+        with patch.dict(
+            os.environ,
+            {
+                "LOGIN_RATELIMIT_MAX_ATTEMPTS": "5",
+                "LOGIN_RATELIMIT_WINDOW_SECONDS": "900",
+                "LOGIN_RATELIMIT_LOCKOUT_SECONDS": "900",
+            }
+        ):
+            import importlib
+
+            import api.routers.auth as auth_module
+            importlib.reload(auth_module)
+
+            locked_until = datetime.now(timezone.utc) + timedelta(minutes=5)
+            mock_db.check_login_lock.return_value = locked_until
+
+            resp = api_client.post(
+                "/auth/login",
+                json={"username": "alice", "password": "whatever"},
+                headers=API_HEADERS,
+            )
+
+            # 429 + Retry-After ヘッダ
+            assert resp.status_code == 429
+            assert "Retry-After" in resp.headers
+            # get_user は呼ばれない（事前チェックで弾かれた）
+            mock_db.get_user.assert_not_called()
+
+    def test_rate_limit_checks_username_lock_before_auth(self, api_client, mock_db):
+        """username がロック中なら、資格情報検証より前に 429 を返す。"""
+        import os
+        from datetime import datetime, timezone
+
+        with patch.dict(
+            os.environ,
+            {
+                "LOGIN_RATELIMIT_MAX_ATTEMPTS": "5",
+                "LOGIN_RATELIMIT_WINDOW_SECONDS": "900",
+                "LOGIN_RATELIMIT_LOCKOUT_SECONDS": "900",
+            }
+        ):
+            import importlib
+
+            import api.routers.auth as auth_module
+            importlib.reload(auth_module)
+
+            # 最初は IP ロックなし
+            # 2回目で username ロック あり
+            locked_until = datetime.now(timezone.utc) + timedelta(minutes=5)
+            mock_db.check_login_lock.side_effect = [None, locked_until]
+
+            resp = api_client.post(
+                "/auth/login",
+                json={"username": "alice", "password": "whatever"},
+                headers=API_HEADERS,
+            )
+
+            assert resp.status_code == 429
+            assert "Retry-After" in resp.headers
+            mock_db.get_user.assert_not_called()
+
+    def test_register_failed_login_calls_both_keys(self, api_client, mock_db):
+        """失敗時に IP と username の両方に対して register_failed_login が呼ばれる。"""
+        import os
+
+        with patch.dict(
+            os.environ,
+            {
+                "LOGIN_RATELIMIT_MAX_ATTEMPTS": "5",
+                "LOGIN_RATELIMIT_WINDOW_SECONDS": "900",
+                "LOGIN_RATELIMIT_LOCKOUT_SECONDS": "900",
+            }
+        ):
+            import importlib
+
+            import api.routers.auth as auth_module
+            importlib.reload(auth_module)
+
+            mock_db.get_user.return_value = _user(password="correct-horse")
+            # ロック中ではない
+            mock_db.check_login_lock.return_value = None
+            # 新規ロック未発生（count < max_attempts）
+            mock_db.register_failed_login.return_value = False
+
+            resp = api_client.post(
+                "/auth/login",
+                json={"username": "alice", "password": "wrong"},
+                headers=API_HEADERS,
+            )
+
+            assert resp.status_code == 401
+            # IP と username 両方に対して register_failed_login が呼ばれる
+            assert mock_db.register_failed_login.call_count == 2
+
+    def test_rate_limit_lockout_when_threshold_exceeded(self, api_client, mock_db):
+        """閾値超過で新規ロック発生時、register_failed_login が True を返し、ログに記録される。"""
+        import os
+
+        with patch.dict(
+            os.environ,
+            {
+                "LOGIN_RATELIMIT_MAX_ATTEMPTS": "5",
+                "LOGIN_RATELIMIT_WINDOW_SECONDS": "900",
+                "LOGIN_RATELIMIT_LOCKOUT_SECONDS": "900",
+            }
+        ):
+            import importlib
+
+            import api.routers.auth as auth_module
+            importlib.reload(auth_module)
+
+            mock_db.get_user.return_value = _user(password="correct-horse")
+            mock_db.check_login_lock.return_value = None
+            # 1回目は False（ロック未発生）、2回目は True（新規ロック）
+            mock_db.register_failed_login.side_effect = [False, True]
+
+            with patch("api.routers.auth._logger") as mock_logger:
+                resp = api_client.post(
+                    "/auth/login",
+                    json={"username": "alice", "password": "wrong"},
+                    headers=API_HEADERS,
+                )
+
+                assert resp.status_code == 401
+                # 新規ロック時はログ出力される（要件に従う）
+                mock_logger.warning.assert_called()
+
+    def test_clear_login_attempts_on_success(self, api_client, mock_db):
+        """ログイン成功時、IP と username の両方に対して clear_login_attempts が呼ばれる。"""
+        import os
+
+        with patch.dict(
+            os.environ,
+            {
+                "LOGIN_RATELIMIT_MAX_ATTEMPTS": "5",
+                "LOGIN_RATELIMIT_WINDOW_SECONDS": "900",
+                "LOGIN_RATELIMIT_LOCKOUT_SECONDS": "900",
+            }
+        ):
+            import importlib
+
+            import api.routers.auth as auth_module
+            importlib.reload(auth_module)
+
+            mock_db.get_user.return_value = _user(password="correct-horse")
+            mock_db.check_login_lock.return_value = None
+
+            resp = api_client.post(
+                "/auth/login",
+                json={"username": "alice", "password": "correct-horse"},
+                headers=API_HEADERS,
+            )
+
+            assert resp.status_code == 200
+            # IP と username 両方に対して clear_login_attempts が呼ばれる
+            assert mock_db.clear_login_attempts.call_count == 2
+
+    def test_ip_and_username_locks_are_independent(self, api_client, mock_db):
+        """IP がロック中でも username が解除されていれば、username は login 可能（逆も同）。"""
+        import os
+
+        with patch.dict(
+            os.environ,
+            {
+                "LOGIN_RATELIMIT_MAX_ATTEMPTS": "5",
+                "LOGIN_RATELIMIT_WINDOW_SECONDS": "900",
+                "LOGIN_RATELIMIT_LOCKOUT_SECONDS": "900",
+            }
+        ):
+            import importlib
+
+            import api.routers.auth as auth_module
+            importlib.reload(auth_module)
+
+            locked_until = datetime.now(timezone.utc) + timedelta(minutes=5)
+            # IP はロック中、username は未ロック
+            mock_db.check_login_lock.side_effect = [locked_until, None]
+
+            resp = api_client.post(
+                "/auth/login",
+                json={"username": "alice", "password": "whatever"},
+                headers=API_HEADERS,
+            )
+
+            # IP ロックで即座に 429
+            assert resp.status_code == 429
+            assert "Retry-After" in resp.headers

@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from api.dependencies import (
     SESSION_COOKIE_NAME,
     _extract_session_token,
+    get_client_ip,
     get_current_user,
     get_firestore_client,
 )
@@ -48,14 +49,26 @@ router = APIRouter()
 _DEFAULT_SESSION_TTL_HOURS = 168
 
 
-def _session_ttl_hours() -> int:
-    raw = os.environ.get("SESSION_TTL_HOURS")
+def _env_int(name: str, default: int, minimum: int) -> int:
+    """環境変数を整数として読む。未設定・不正値は default、minimum 未満は minimum に丸める。"""
+    raw = os.environ.get(name)
     if not raw:
-        return _DEFAULT_SESSION_TTL_HOURS
+        return default
     try:
-        return max(1, int(raw))
+        return max(minimum, int(raw))
     except ValueError:
-        return _DEFAULT_SESSION_TTL_HOURS
+        return default
+
+
+def _session_ttl_hours() -> int:
+    return _env_int("SESSION_TTL_HOURS", _DEFAULT_SESSION_TTL_HOURS, 1)
+
+
+# ログイン試行レートリミット設定。既定値は .env.example / docker-compose と一致させる。
+# LOGIN_RATELIMIT_MAX_ATTEMPTS=0 で機能無効化。
+_DEFAULT_LOGIN_RATELIMIT_MAX_ATTEMPTS = 5
+_DEFAULT_LOGIN_RATELIMIT_WINDOW_SECONDS = 900
+_DEFAULT_LOGIN_RATELIMIT_LOCKOUT_SECONDS = 900
 
 
 def _cookie_secure() -> bool:
@@ -67,21 +80,79 @@ def _user_response(user: User) -> UserResponse:
     return UserResponse(username=user.username, role=user.role, display_name=user.display_name)
 
 
+def _make_rate_limit_keys(client_ip: str, username: str) -> tuple[str, str]:
+    """IP と username をレートリミットキーに変換する。
+
+    IP は生値を保存しないよう SHA-256 でハッシュ化する。username は正規化済みで
+    機微情報ではないため、プリフィックス付与のみとする。
+    """
+    ip_key = "ip:" + hash_token(client_ip)
+    user_key = "user:" + username
+    return ip_key, user_key
+
+
+def _raise_if_locked(locked_until: datetime | None, now: datetime) -> None:
+    """ロック中（locked_until が未来）なら 429 + Retry-After を送出する。"""
+    if locked_until:
+        retry_after = max(0, int((locked_until - now).total_seconds()))
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many login attempts. Please try again later.",
+            headers={"Retry-After": str(retry_after)},
+        )
+
+
 @router.post("/auth/login", response_model=LoginResponse)
 def login(
     payload: LoginRequest,
     response: Response,
+    request: Request,
     db: FirestoreClient = Depends(get_firestore_client),
 ):
     username = normalize_username(payload.username)
+    max_attempts = _env_int(
+        "LOGIN_RATELIMIT_MAX_ATTEMPTS", _DEFAULT_LOGIN_RATELIMIT_MAX_ATTEMPTS, 0
+    )
+    # max_attempts == 0 でレートリミット無効。有効時のみキー・しきい値を一度だけ算出する。
+    rate_limited = max_attempts > 0
+    if rate_limited:
+        now = datetime.now(timezone.utc)
+        ip_key, user_key = _make_rate_limit_keys(get_client_ip(request), username)
+        window_seconds = _env_int(
+            "LOGIN_RATELIMIT_WINDOW_SECONDS", _DEFAULT_LOGIN_RATELIMIT_WINDOW_SECONDS, 0
+        )
+        lockout_seconds = _env_int(
+            "LOGIN_RATELIMIT_LOCKOUT_SECONDS", _DEFAULT_LOGIN_RATELIMIT_LOCKOUT_SECONDS, 0
+        )
+
+        # 事前チェック: IP / username いずれかがロック中なら資格情報検証より前に 429。
+        _raise_if_locked(db.check_login_lock(ip_key, now), now)
+        _raise_if_locked(db.check_login_lock(user_key, now), now)
+
     user = db.get_user(username)
     # ユーザー不在でも verify_password を通し、存在有無によるタイミング差・情報漏洩を避ける。
     if user is None or not verify_password(payload.password, user.password_hash):
+        # IP と username 両方に失敗を記録。新規ロック時のみログ（IP は生値を出さずハッシュキーで）。
+        if rate_limited:
+            if db.register_failed_login(
+                ip_key, now, max_attempts, window_seconds, lockout_seconds
+            ):
+                _logger.warning("login rate limit lockout for ip_key=%s", ip_key)
+            if db.register_failed_login(
+                user_key, now, max_attempts, window_seconds, lockout_seconds
+            ):
+                _logger.warning("login rate limit lockout for username=%s", username)
+
         _logger.warning("login failed for username=%s", username)  # 平文 PW は出さない
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid username or password",
         )
+
+    # ログイン成功時は試行カウンタをクリア
+    if rate_limited:
+        db.clear_login_attempts(ip_key)
+        db.clear_login_attempts(user_key)
 
     token = generate_session_token()
     ttl_hours = _session_ttl_hours()
