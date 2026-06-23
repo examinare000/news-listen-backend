@@ -156,3 +156,15 @@ class TestSessions:
         mock_firestore_db.collection.return_value.document.return_value = ref
 
         assert FirestoreClient().get_session("x") is None
+
+    def test_delete_sessions_for_user_deletes_all(self, mock_firestore_db):
+        from shared.firestore_client import FirestoreClient
+
+        d1, d2 = MagicMock(), MagicMock()
+        mock_firestore_db.collection.return_value.where.return_value.stream.return_value = [d1, d2]
+
+        count = FirestoreClient().delete_sessions_for_user("uid-1")
+
+        assert count == 2
+        d1.reference.delete.assert_called_once()
+        d2.reference.delete.assert_called_once()

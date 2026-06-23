@@ -95,6 +95,32 @@ class TestUpdateUser:
         assert saved.role == "admin"
         assert verify_password("reset-pass", saved.password_hash)
 
+    def test_password_reset_revokes_sessions(self, api_client, mock_db):
+        mock_db.get_session.return_value = _session("admin")
+        mock_db.get_user.return_value = _user("bob", role="user")
+        resp = api_client.patch(
+            "/admin/users/bob", json={"new_password": "reset-pass"}, headers=AUTH
+        )
+        assert resp.status_code == 200
+        # 旧資格情報での継続アクセスを断つためセッションを失効させる。
+        mock_db.delete_sessions_for_user.assert_called_once_with("uid-bob")
+
+    def test_cannot_demote_last_admin(self, api_client, mock_db):
+        mock_db.get_session.return_value = _session("admin")
+        mock_db.get_user.return_value = _user("bob", role="admin")
+        mock_db.list_users.return_value = [_user("bob", role="admin")]  # 唯一の admin
+        resp = api_client.patch("/admin/users/bob", json={"role": "user"}, headers=AUTH)
+        assert resp.status_code == 409
+        mock_db.save_user.assert_not_called()
+
+    def test_demote_admin_when_other_admin_exists_revokes_sessions(self, api_client, mock_db):
+        mock_db.get_session.return_value = _session("admin")
+        mock_db.get_user.return_value = _user("bob", role="admin")
+        mock_db.list_users.return_value = [_user("bob", role="admin"), _user("alice", role="admin")]
+        resp = api_client.patch("/admin/users/bob", json={"role": "user"}, headers=AUTH)
+        assert resp.status_code == 200
+        mock_db.delete_sessions_for_user.assert_called_once_with("uid-bob")
+
     def test_missing_user_returns_404(self, api_client, mock_db):
         mock_db.get_session.return_value = _session("admin")
         mock_db.get_user.return_value = None
@@ -108,6 +134,24 @@ class TestDeleteUser:
     def test_deletes_user(self, api_client, mock_db):
         mock_db.get_session.return_value = _session("admin")
         mock_db.get_user.return_value = _user("bob")
+        resp = api_client.delete("/admin/users/bob", headers=AUTH)
+        assert resp.status_code == 200
+        mock_db.delete_user.assert_called_once_with("bob")
+        # 削除済みユーザーが TTL 満了まで叩けないようセッションも失効。
+        mock_db.delete_sessions_for_user.assert_called_once_with("uid-bob")
+
+    def test_cannot_delete_last_admin(self, api_client, mock_db):
+        mock_db.get_session.return_value = _session("admin")
+        mock_db.get_user.return_value = _user("bob", role="admin")
+        mock_db.list_users.return_value = [_user("bob", role="admin")]  # 唯一の admin
+        resp = api_client.delete("/admin/users/bob", headers=AUTH)
+        assert resp.status_code == 409
+        mock_db.delete_user.assert_not_called()
+
+    def test_delete_admin_allowed_when_other_admin_exists(self, api_client, mock_db):
+        mock_db.get_session.return_value = _session("admin")
+        mock_db.get_user.return_value = _user("bob", role="admin")
+        mock_db.list_users.return_value = [_user("bob", role="admin"), _user("alice", role="admin")]
         resp = api_client.delete("/admin/users/bob", headers=AUTH)
         assert resp.status_code == 200
         mock_db.delete_user.assert_called_once_with("bob")
