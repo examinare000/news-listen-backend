@@ -2,6 +2,7 @@
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
 from api.dependencies import get_firestore_client, get_job_trigger, get_user_id
+from api.ratelimit import rate_limit
 from api.schemas import ActionResponse
 from shared.firestore_client import FirestoreClient
 
@@ -15,6 +16,7 @@ def star_article(
     user_id: str = Depends(get_user_id),
     db: FirestoreClient = Depends(get_firestore_client),
     job_trigger=Depends(get_job_trigger),
+    _rl: None = Depends(rate_limit("star")),
 ):
     if not db.article_exists(article_id):
         raise HTTPException(status_code=404, detail="Article not found")
