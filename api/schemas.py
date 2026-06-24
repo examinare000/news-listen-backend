@@ -46,6 +46,8 @@ class PodcastResponse(BaseModel):
     audio_url: str
     japanese_intro_text: str
     duration_seconds: int
+    status: str
+    error_message: str | None = None
     created_at: str  # ISO 8601
 
     @classmethod
@@ -61,6 +63,8 @@ class PodcastResponse(BaseModel):
                 の代わりに使用する。API ルーターは StorageClient.generate_audio_url() で
                 変換してからこの引数に渡す。
         """
+        # WHY: generator が processing 行を保存しない現状でも前方互換。
+        # 将来 generator が processing 行を書けば本フィールドはそのまま反映される。
         return cls(
             id=podcast.id,
             type=podcast.type,
@@ -71,6 +75,8 @@ class PodcastResponse(BaseModel):
             audio_url=audio_url if audio_url is not None else podcast.audio_url,
             japanese_intro_text=podcast.japanese_intro_text,
             duration_seconds=podcast.duration_seconds,
+            status=podcast.status,
+            error_message=podcast.error_message,
             created_at=podcast.created_at.isoformat(),
         )
 
