@@ -303,7 +303,7 @@ def test_try_acquire_cache_acquires_when_status_is_failed(mock_firestore_db):
     snapshot = MagicMock()
     snapshot.exists = True
     snapshot.to_dict.return_value = {"status": "failed"}
-    ref = _setup_cache_snapshot(mock_firestore_db, snapshot)
+    _setup_cache_snapshot(mock_firestore_db, snapshot)
 
     with patch("shared.firestore_client.firestore.transactional", lambda f: f):
         acquired = client.try_acquire_cache(CACHE_KEY, ARTICLE_ID, "toeic_900", "ja-en")

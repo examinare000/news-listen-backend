@@ -1,6 +1,6 @@
 from unittest.mock import MagicMock, patch
 from datetime import datetime, timedelta, timezone
-from shared.models import Article, UserPrefs
+from shared.models import Article
 
 
 def test_save_article_calls_firestore_set(mock_firestore_db):
