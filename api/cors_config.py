@@ -39,5 +39,5 @@ def build_cors_options(env: Mapping[str, str]) -> dict:
         # PATCH/PUT は実際に使用中（PATCH /auth/me, PUT /admin/featured-sites/{id} 等）。
         # 省くとブラウザのプリフライトで該当メソッドが拒否されるため必ず含める。
         "allow_methods": ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-        "allow_headers": ["X-API-Key", "Authorization", "Content-Type"],
+        "allow_headers": ["X-API-Key", "Authorization", "Content-Type", "X-CSRF-Token"],
     }

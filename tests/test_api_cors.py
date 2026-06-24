@@ -212,3 +212,46 @@ class TestCorsIntegration:
         """
         resp = api_client.get("/auth/me", headers={"X-API-Key": "test-key"})
         assert resp.status_code == 401
+
+    def test_c8_cors_allow_headers_includes_x_csrf_token(self):
+        """Preflight で Access-Control-Request-Headers に X-CSRF-Token を含む。
+
+        C8: 許可されたオリジンから Access-Control-Request-Headers: X-CSRF-Token
+        を含む preflight を送ると、Access-Control-Allow-Headers に
+        X-CSRF-Token（大文字小文字不問）が含まれる。
+
+        WHY: CSRF 防御で X-CSRF-Token ヘッダを使用するため、
+        preflight が これを許可する必要がある。
+        """
+        client, m = _client_with_env(CORS_ALLOWED_ORIGINS="https://app.example")
+
+        resp = client.options(
+            "/auth/login",
+            headers={
+                "Origin": "https://app.example",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "X-CSRF-Token",
+            },
+        )
+        allow_headers = resp.headers.get("access-control-allow-headers", "").lower()
+        assert "x-csrf-token" in allow_headers
+
+    def test_c9_csrf_403_carries_cors_headers(self):
+        """CSRF 有効時、トークン無しのクロスオリジン状態変更は 403 かつ CORS ヘッダ付き。
+
+        C9: ミドルウェア順序（CORS が CSRF の外側）の回帰検知。CSRF が CORS の外側だと
+        403 に Access-Control-Allow-Origin が付かず、ブラウザが理由を読めなくなる。
+
+        WHY: middleware 登録順を逆にすると 403 から CORS ヘッダが消える。本テストで固定する。
+        """
+        client, m = _client_with_env(
+            CORS_ALLOWED_ORIGINS="https://app.example",
+            CSRF_PROTECTION_ENABLED="true",
+        )
+        # Bearer なし・csrf_token なしの状態変更 POST（ルーティング前に CSRF が 403 を返す）
+        resp = client.post(
+            "/articles/abc123/star",
+            headers={"Origin": "https://app.example", "X-API-Key": "test-key"},
+        )
+        assert resp.status_code == 403
+        assert resp.headers.get("access-control-allow-origin") == "https://app.example"

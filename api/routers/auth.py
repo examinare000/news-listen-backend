@@ -26,6 +26,7 @@ from api.dependencies import (
     get_audit_logger,
 )
 from api.audit import AuditLogger
+from api.middleware.csrf import generate_csrf_token
 from api.schemas import (
     LoginRequest,
     LoginResponse,
@@ -76,6 +77,23 @@ _DEFAULT_LOGIN_RATELIMIT_LOCKOUT_SECONDS = 900
 def _cookie_secure() -> bool:
     """Cookie の Secure 属性。ローカル http 開発では SESSION_COOKIE_SECURE=false で無効化する。"""
     return os.environ.get("SESSION_COOKIE_SECURE", "true").lower() != "false"
+
+
+def _set_csrf_cookie(response: Response) -> None:
+    """CSRF double-submit 用の csrf_token Cookie を発行する。
+
+    WHY: 非 httpOnly（JS が読んで X-CSRF-Token ヘッダに載せる）・SameSite=lax・セッションと
+         同じ TTL/Secure 属性。login と /auth/me 補填で同一属性を保証するため一箇所に集約する。
+    """
+    response.set_cookie(
+        key="csrf_token",
+        value=generate_csrf_token(),
+        max_age=_session_ttl_hours() * 3600,
+        httponly=False,  # JS から読める（CSRF double-submit 必須）
+        secure=_cookie_secure(),
+        samesite="lax",
+        path="/",
+    )
 
 
 def _user_response(user: User) -> UserResponse:
@@ -198,6 +216,10 @@ def login(
         samesite="lax",
         path="/",
     )
+
+    # CSRF double-submit cookie をセッションと同時に発行する。
+    _set_csrf_cookie(response)
+
     return LoginResponse(token=token, user=_user_response(user))
 
 
@@ -227,6 +249,8 @@ def logout(
 
 @router.get("/auth/me", response_model=UserResponse)
 def me(
+    request: Request,
+    response: Response,
     current: Session = Depends(get_current_user),
     db: FirestoreClient = Depends(get_firestore_client),
 ):
@@ -234,6 +258,13 @@ def me(
     if user is None:
         # セッションは有効だがユーザーが削除済み。
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User no longer exists")
+
+    # 既存セッションが CSRF トークンを持っていない場合に補填する。
+    # WHY: ログインし直さないユーザーも CSRF 保護を受けられるよう、
+    #       /auth/me アクセス時に csrf_token cookie を発行する。
+    #       既に cookie がある場合は上書きしない（ローテーションは login で行う）。
+    if "csrf_token" not in request.cookies:
+        _set_csrf_cookie(response)
     return _user_response(user)
 
 

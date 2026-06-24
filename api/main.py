@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 from fastapi.security.api_key import APIKeyHeader
 
 from api.cors_config import build_cors_options
+from api.middleware.csrf import CsrfMiddleware, build_csrf_config
 from api.middleware.security_headers import SecurityHeadersMiddleware, build_security_headers
 from api.ratelimit import rate_limit
 from api.routers import admin, articles, auth, feed, podcasts, settings
@@ -45,11 +46,13 @@ async def _redact_validation_errors(request: Request, exc: RequestValidationErro
         content=jsonable_encoder({"detail": sanitized}),
     )
 
-# CORS と セキュリティヘッダ ミドルウェアを追加。
-# ミドルウェアの追加順序は逆順で適用される（後に add されたものが外側）。
-# つまり CORSMiddleware が先に add されると、内側で動く。
-# SecurityHeadersMiddleware が後に add されると、外側で動く。
-# 結果: SecurityHeaders（外）→ CORS（内）→ ルーター
+# ミドルウェア登録順序（後で add されたものが外側に適用される）:
+# 適用順（外→内）: SecurityHeaders（最外）→ CORS → CSRF（最内）→ ルーター
+# WHY: CORS を CSRF の外側に置くことで、CsrfMiddleware が返す 403 が CORS を通過し、
+#       Access-Control-Allow-Origin 等が付与される。これがないとブラウザは
+#       クロスオリジンの 403 を CORS 違反として握りつぶし、フロントが理由を読めない。
+# 注意: add 順が逆順適用のため、CSRF を先に add（最内）し CORS を後に add（外側）する。
+app.add_middleware(CsrfMiddleware, config=build_csrf_config(os.environ))
 app.add_middleware(CORSMiddleware, **build_cors_options(os.environ))
 app.add_middleware(SecurityHeadersMiddleware, headers=build_security_headers(os.environ))
 
