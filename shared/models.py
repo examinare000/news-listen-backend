@@ -6,6 +6,20 @@ from pydantic import BaseModel, Field
 PodcastType = Literal["single", "digest"]
 PodcastStatus = Literal["processing", "completed", "failed", "partial_failed"]
 
+# 監査ログのアクション種別。
+AuditAction = Literal[
+    "login_success",
+    "login_failure",
+    "logout",
+    "login_lockout",
+    "user_create",
+    "user_update",
+    "user_role_change",
+    "user_password_reset",
+    "user_delete",
+    "session_revoke",
+]
+
 # クロスユーザーキャッシュのデフォルト言語。現状は固定値（言語切替 UI は未実装）。
 # キャッシュキーの言語次元として将来の多言語化に備えて用意する。
 DEFAULT_PODCAST_LANGUAGE: str = "ja-en"
@@ -144,3 +158,21 @@ class PodcastCache(BaseModel):
     japanese_intro_text: str | None = None
     duration_seconds: int | None = None
     created_at: datetime
+
+
+class AuditLog(BaseModel):
+    """監査ログエントリー。
+
+    Firestore コレクション `auditLogs/{doc_id}` に対応する。
+    doc_id は Firestore の自動採番（add()）で生成される。
+    action は必須。timestamp / ip / actor_user_id / actor_username / target_username / details は optional。
+    IP は生値で保存する（ログイン試行レートリミット（ADR-014）と異なり、ハッシュ化しない）。
+    """
+
+    action: AuditAction
+    timestamp: datetime
+    actor_user_id: str | None = None
+    actor_username: str | None = None
+    target_username: str | None = None
+    ip: str | None = None
+    details: dict | None = None

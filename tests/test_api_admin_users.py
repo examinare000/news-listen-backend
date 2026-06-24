@@ -161,3 +161,73 @@ class TestDeleteUser:
         mock_db.get_user.return_value = None
         resp = api_client.delete("/admin/users/ghost", headers=AUTH)
         assert resp.status_code == 404
+
+
+class TestAuditInstrumentation:
+    """admin ルーターが AuditLogger.record を適切に呼ぶことを検証する（計装）。"""
+
+    def _actions(self, mock_audit) -> list[str]:
+        return [c.kwargs["action"] for c in mock_audit.record.call_args_list]
+
+    def test_create_user_records_audit(self, api_client, mock_db, mock_audit):
+        mock_db.get_session.return_value = _session("admin")
+        mock_db.get_user.return_value = None
+        api_client.post(
+            "/admin/users",
+            json={"username": "carol", "password": "carol-pass", "role": "user"},
+            headers=AUTH,
+        )
+        assert "user_create" in self._actions(mock_audit)
+        call = mock_audit.record.call_args_list[0]
+        assert call.kwargs["target_username"] == "carol"
+        assert call.kwargs["actor"].username == "admin"
+
+    def test_role_change_records_audit(self, api_client, mock_db, mock_audit):
+        mock_db.get_session.return_value = _session("admin")
+        mock_db.get_user.return_value = _user("bob", role="user")
+        api_client.patch("/admin/users/bob", json={"role": "admin"}, headers=AUTH)
+        assert "user_role_change" in self._actions(mock_audit)
+
+    def test_password_reset_records_audit_and_session_revoke(
+        self, api_client, mock_db, mock_audit
+    ):
+        mock_db.get_session.return_value = _session("admin")
+        mock_db.get_user.return_value = _user("bob", role="user")
+        api_client.patch(
+            "/admin/users/bob", json={"new_password": "reset-pass"}, headers=AUTH
+        )
+        actions = self._actions(mock_audit)
+        assert "user_password_reset" in actions
+        assert "session_revoke" in actions
+
+    def test_display_name_only_records_user_update(
+        self, api_client, mock_db, mock_audit
+    ):
+        mock_db.get_session.return_value = _session("admin")
+        mock_db.get_user.return_value = _user("bob", role="user")
+        api_client.patch(
+            "/admin/users/bob", json={"display_name": "Bobby"}, headers=AUTH
+        )
+        assert self._actions(mock_audit) == ["user_update"]
+
+    def test_delete_user_records_audit(self, api_client, mock_db, mock_audit):
+        mock_db.get_session.return_value = _session("admin")
+        mock_db.get_user.return_value = _user("bob")
+        api_client.delete("/admin/users/bob", headers=AUTH)
+        delete_call = next(
+            c for c in mock_audit.record.call_args_list
+            if c.kwargs["action"] == "user_delete"
+        )
+        assert delete_call.kwargs["target_username"] == "bob"
+
+    def test_create_audit_does_not_contain_plaintext_password(
+        self, api_client, mock_db, mock_audit
+    ):
+        mock_db.get_session.return_value = _session("admin")
+        mock_db.get_user.return_value = None
+        api_client.post(
+            "/admin/users",
+            json={"username": "carol", "password": "super-secret", "role": "user"},
+            headers=AUTH,
+        )
+        assert "super-secret" not in str(mock_audit.record.call_args_list)

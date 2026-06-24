@@ -23,7 +23,9 @@ from api.dependencies import (
     get_client_ip,
     get_current_user,
     get_firestore_client,
+    get_audit_logger,
 )
+from api.audit import AuditLogger
 from api.schemas import (
     LoginRequest,
     LoginResponse,
@@ -108,8 +110,10 @@ def login(
     response: Response,
     request: Request,
     db: FirestoreClient = Depends(get_firestore_client),
+    audit_logger: AuditLogger = Depends(get_audit_logger),
 ):
     username = normalize_username(payload.username)
+    client_ip = get_client_ip(request)
     max_attempts = _env_int(
         "LOGIN_RATELIMIT_MAX_ATTEMPTS", _DEFAULT_LOGIN_RATELIMIT_MAX_ATTEMPTS, 0
     )
@@ -117,7 +121,7 @@ def login(
     rate_limited = max_attempts > 0
     if rate_limited:
         now = datetime.now(timezone.utc)
-        ip_key, user_key = _make_rate_limit_keys(get_client_ip(request), username)
+        ip_key, user_key = _make_rate_limit_keys(client_ip, username)
         window_seconds = _env_int(
             "LOGIN_RATELIMIT_WINDOW_SECONDS", _DEFAULT_LOGIN_RATELIMIT_WINDOW_SECONDS, 0
         )
@@ -133,17 +137,27 @@ def login(
     # ユーザー不在でも verify_password を通し、存在有無によるタイミング差・情報漏洩を避ける。
     if user is None or not verify_password(payload.password, user.password_hash):
         # IP と username 両方に失敗を記録。新規ロック時のみログ（IP は生値を出さずハッシュキーで）。
+        lockout_triggered = False
         if rate_limited:
             if db.register_failed_login(
                 ip_key, now, max_attempts, window_seconds, lockout_seconds
             ):
+                lockout_triggered = True
                 _logger.warning("login rate limit lockout for ip_key=%s", ip_key)
+                # ロックアウト時は監査ログに記録
+                audit_logger.record(action="login_lockout", ip=client_ip)
             if db.register_failed_login(
                 user_key, now, max_attempts, window_seconds, lockout_seconds
             ):
+                if not lockout_triggered:
+                    lockout_triggered = True
+                    audit_logger.record(action="login_lockout", ip=client_ip)
                 _logger.warning("login rate limit lockout for username=%s", username)
 
         _logger.warning("login failed for username=%s", username)  # 平文 PW は出さない
+        # ロックアウト以外のログイン失敗を記録
+        if not lockout_triggered:
+            audit_logger.record(action="login_failure", ip=client_ip)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid username or password",
@@ -167,6 +181,9 @@ def login(
     )
     db.create_session(session)
 
+    # ログイン成功を記録（actor はセッション）
+    audit_logger.record(action="login_success", actor=session, ip=client_ip)
+
     response.set_cookie(
         key=SESSION_COOKIE_NAME,
         value=token,
@@ -184,11 +201,21 @@ def logout(
     request: Request,
     response: Response,
     db: FirestoreClient = Depends(get_firestore_client),
+    audit_logger: AuditLogger = Depends(get_audit_logger),
 ):
-    """セッションを破棄する。トークンが無い／無効でも 200（冪等）。"""
+    """セッションを破棄する。トークンが無い／無効でも 200（冪等）。
+
+    認証セッションがあればログアウト監査を記録する。
+    """
     token = _extract_session_token(request)
     if token:
-        db.delete_session(hash_token(token))
+        session_id = hash_token(token)
+        # 監査ログの actor を得るため、セッションを削除する前に読み出す。
+        # 先に delete すると get_session が None を返し、ログアウトが記録されない。
+        current = db.get_session(session_id)
+        db.delete_session(session_id)
+        if current:
+            audit_logger.record(action="logout", actor=current, ip=get_client_ip(request))
     response.delete_cookie(SESSION_COOKIE_NAME, path="/")
     return {"status": "ok"}
 

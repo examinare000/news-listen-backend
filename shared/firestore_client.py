@@ -7,6 +7,7 @@ from google.cloud import firestore
 
 from shared.models import (
     Article,
+    AuditLog,
     FeaturedSite,
     Podcast,
     PodcastCache,
@@ -439,3 +440,49 @@ class FirestoreClient:
         doc_id = f"loginAttempts_{key}"
         ref = self._db.collection("loginAttempts").document(doc_id)
         ref.delete()
+
+    # ---------- Audit logs ----------
+
+    def append_audit_log(self, audit: AuditLog) -> str:
+        """監査ログを auditLogs コレクションに追記する（自動採番）。
+
+        Firestore の add() メソッドで新規ドキュメント ID を採番し、
+        監査ログを追記専用で保存する。更新・削除メソッドは存在しない。
+
+        例外は握り潰さず呼び出し元へ伝播させる。ベストエフォート（書き込み失敗でも
+        本操作を成功させ、失敗を error ログ化する）の責務は AuditLogger.record に集約し、
+        失敗の可観測性を確保するため。
+
+        Args:
+            audit: 追記する AuditLog エントリー
+
+        Returns:
+            生成されたドキュメント ID
+        """
+        data = audit.model_dump(mode="json")
+        # add() は (WriteResult, DocumentReference) を返す。
+        _, doc_ref = self._db.collection("auditLogs").add(data)
+        return doc_ref.id
+
+    def list_audit_logs(
+        self, action: str | None = None, limit: int = 50
+    ) -> list[AuditLog]:
+        """監査ログを timestamp DESC で取得（任意フィルタ）。
+
+        auditLogs コレクションから timestamp 降順で取得し、
+        任意の action でフィルタリング可能。
+
+        Args:
+            action: フィルタ対象のアクション（None なら全件）
+            limit: 取得上限件数（既定 50）
+
+        Returns:
+            AuditLog リスト（timestamp DESC）
+        """
+        query = self._db.collection("auditLogs")
+        if action is not None:
+            query = query.where("action", "==", action)
+        docs = query.order_by("timestamp", direction=firestore.Query.DESCENDING).limit(
+            limit
+        ).stream()
+        return [AuditLog(**doc.to_dict()) for doc in docs]

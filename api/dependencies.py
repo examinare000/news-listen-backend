@@ -136,3 +136,16 @@ def require_admin(current: Session = Depends(get_current_user)) -> Session:
             detail="Admin privileges required",
         )
     return current
+
+
+@lru_cache(maxsize=1)
+def get_audit_logger():
+    """AuditLogger のシングルトンを返す。
+
+    FirestoreClient を依存として注入し、ベストエフォート設計で監査ログを記録する。
+    テストで時刻を制御可能にするため clock 関数の依存性注入を設計している。
+    """
+    # 遅延 import: AuditLogger の循環依存を避ける
+    from api.audit import AuditLogger
+
+    return AuditLogger(firestore_client=get_firestore_client())

@@ -50,18 +50,32 @@ def mock_job_trigger():
 
 
 @pytest.fixture
-def api_client(mock_db, mock_storage, mock_job_trigger):
+def mock_audit():
+    """API ルーターテスト用の AuditLogger モック。
+
+    record() を呼び出して監査ログが記録されたことを検証する。
+    ベストエフォート設計なので、失敗時の動作をテストする際は
+    mock_audit.record.side_effect で例外を設定できる。
+    """
+    mock = MagicMock()
+    return mock
+
+
+@pytest.fixture
+def api_client(mock_db, mock_storage, mock_job_trigger, mock_audit):
     """API_KEY と USER_ID を設定した TestClient。
 
-    FirestoreClient / StorageClient / JobTrigger は dependency_overrides 経由で
+    FirestoreClient / StorageClient / JobTrigger / AuditLogger は dependency_overrides 経由で
     モックに差し替えられる。テスト内で mock_db / mock_storage のメソッドを設定してから
     api_client を呼ぶこと。
 
     例:
-        def test_foo(api_client, mock_db, mock_storage):
+        def test_foo(api_client, mock_db, mock_storage, mock_audit):
             mock_db.get_podcast.return_value = pod
             mock_storage.generate_audio_url.return_value = "https://..."
             response = api_client.get("/podcasts/abc", ...)
+            # 監査ログが記録されたことを確認
+            mock_audit.record.assert_called()
 
     LOGIN_RATELIMIT_MAX_ATTEMPTS はデフォルト 0（無効化）。
     テスト側で明示的に有効化する場合は patch.dict で環境変数をセットして
@@ -83,12 +97,14 @@ def api_client(mock_db, mock_storage, mock_job_trigger):
             get_job_trigger,
             get_storage_client,
             get_user_id,
+            get_audit_logger,
         )
         importlib.reload(m)
         # lru_cache をバイパスして各テストに独立したモックを注入する
         m.app.dependency_overrides[get_firestore_client] = lambda: mock_db
         m.app.dependency_overrides[get_storage_client] = lambda: mock_storage
         m.app.dependency_overrides[get_job_trigger] = lambda: mock_job_trigger
+        m.app.dependency_overrides[get_audit_logger] = lambda: mock_audit
         # get_user_id はセッション由来へ変更されたため、既存ルーターテストでは固定 user_id を注入する。
         # 認証フロー自体（get_current_user／get_session）を検証するテストは mock_db.get_session を
         # 設定し、本オーバーライドに依存しない auth/admin エンドポイントを直接叩く。
