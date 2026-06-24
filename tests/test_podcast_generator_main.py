@@ -849,3 +849,57 @@ def test_generation_exception_no_existing_row_no_promote(mocks):
 
     # save_podcast_cache (failed) は呼ばれること
     db.save_podcast_cache.assert_called_once()
+
+
+# ──────────────────────────────────────────────
+# T17: Notifier 統合テスト
+# ──────────────────────────────────────────────
+
+
+def test_generation_success_calls_notifier_notify_completion(mocks):
+    """生成成功後、notifier.notify_completion が正しい引数で呼ばれることを検証する"""
+    from unittest.mock import MagicMock
+
+    db = mocks["db"]
+    mock_notifier = MagicMock()
+
+    # main() が notifier パラメータを受け取るようにパッチ
+    with patch("jobs.podcast_generator.main.build_notifier") as mock_build:
+        mock_build.return_value = mock_notifier
+
+        db.get_user_podcast_for_article.return_value = None
+        db.get_podcast_cache.return_value = None
+        db.try_acquire_cache.return_value = True
+
+        # notifier を依存として注入
+        mocks["main"].main(notifier=mock_notifier)
+
+        # notify_completion が呼ばれていることを確認
+        mock_notifier.notify_completion.assert_called_once()
+        call_args = mock_notifier.notify_completion.call_args
+
+        # 引数を検証: user_id, title, body, data
+        assert call_args[0][0] == "user1"  # user_id
+        assert "生成完了" in call_args[1]["title"]
+        assert "toeic_900" in call_args[1]["body"]
+        assert "podcast_id" in call_args[1]["data"]
+        assert "article_id" in call_args[1]["data"]
+
+
+def test_generation_success_notifier_exception_does_not_break_job(mocks):
+    """notifier.notify_completion が例外を出しても、ジョブは成功すること（非致命）"""
+    from unittest.mock import MagicMock
+
+    db = mocks["db"]
+    mock_notifier = MagicMock()
+    mock_notifier.notify_completion.side_effect = Exception("Notification failed")
+
+    db.get_user_podcast_for_article.return_value = None
+    db.get_podcast_cache.return_value = None
+    db.try_acquire_cache.return_value = True
+
+    # 例外を出さずに正常に完了する
+    mocks["main"].main(notifier=mock_notifier)
+
+    # save_podcast は呼ばれていること（ジョブは成功している）
+    db.save_podcast.assert_called_once()

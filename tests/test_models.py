@@ -6,6 +6,7 @@ from pydantic import ValidationError
 from shared.models import (
     Article,
     Podcast,
+    PushSubscription,
     Recommendation,
     RecommendedArticle,
     RssSource,
@@ -221,3 +222,38 @@ class TestPodcast:
             "error_message", "created_at", "user_id",
         ]:
             assert field in data
+
+
+class TestPushSubscription:
+    def test_valid_creation_with_defaults(self):
+        sub = PushSubscription(
+            user_id="user1",
+            endpoint="https://push.example.com/endpoint/abc123",
+            p256dh="base64_encoded_key",
+            auth="base64_encoded_auth",
+            created_at=NOW,
+        )
+        assert sub.user_id == "user1"
+        assert sub.endpoint == "https://push.example.com/endpoint/abc123"
+        assert sub.p256dh == "base64_encoded_key"
+        assert sub.auth == "base64_encoded_auth"
+        assert sub.platform == "webpush"
+        assert sub.created_at == NOW
+
+    def test_platform_defaults_to_webpush(self):
+        sub = PushSubscription(
+            user_id="user1",
+            endpoint="https://push.example.com/endpoint/abc123",
+            p256dh="key",
+            auth="auth",
+            created_at=NOW,
+        )
+        assert sub.platform == "webpush"
+
+    def test_all_required_fields(self):
+        with pytest.raises(ValidationError):
+            PushSubscription(
+                user_id="user1",
+                endpoint="https://push.example.com/endpoint/abc123",
+                p256dh="key",
+            )

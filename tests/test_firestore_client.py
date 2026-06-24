@@ -1,6 +1,7 @@
 from unittest.mock import MagicMock, patch
 from datetime import datetime, timedelta, timezone
-from shared.models import Article
+from shared.models import Article, PushSubscription
+import hashlib
 
 
 def test_save_article_calls_firestore_set(mock_firestore_db):
@@ -196,6 +197,169 @@ def test_delete_featured_site_calls_delete(mock_firestore_db):
     mock_firestore_db.collection.assert_called_with("featuredSites")
     mock_firestore_db.collection.return_value.document.assert_called_with("techcrunch")
     mock_doc_ref.delete.assert_called_once()
+
+
+# ---------- Push Subscriptions ----------
+
+
+def test_save_push_subscription_calls_set_with_merge_true(mock_firestore_db):
+    """save_push_subscription が endpoint の SHA-256 ハッシュを doc-id として使うこと"""
+    from shared.firestore_client import FirestoreClient
+    client = FirestoreClient()
+
+    now = datetime(2026, 6, 14, 12, 0, 0, tzinfo=timezone.utc)
+    endpoint = "https://push.example.com/endpoint/abc123"
+    sub = PushSubscription(
+        user_id="user1",
+        endpoint=endpoint,
+        p256dh="dh_key_base64",
+        auth="auth_secret_base64",
+        created_at=now,
+    )
+
+    mock_doc_ref = MagicMock()
+    mock_firestore_db.collection.return_value.document.return_value = mock_doc_ref
+
+    client.save_push_subscription(sub)
+
+    # endpoint の SHA-256 ハッシュが doc-id として使われることを確認
+    expected_doc_id = hashlib.sha256(endpoint.encode()).hexdigest()
+    mock_firestore_db.collection.assert_called_with("pushSubscriptions")
+    mock_firestore_db.collection.return_value.document.assert_called_with(expected_doc_id)
+    # merge=True でセットされることを確認
+    mock_doc_ref.set.assert_called_once()
+    call_args = mock_doc_ref.set.call_args
+    assert call_args[1]["merge"] is True
+
+
+def test_get_push_subscriptions_queries_by_user_id(mock_firestore_db):
+    """get_push_subscriptions が user_id で照会し、PushSubscription リストを返すこと"""
+    from shared.firestore_client import FirestoreClient
+    client = FirestoreClient()
+
+    now = datetime(2026, 6, 14, 12, 0, 0, tzinfo=timezone.utc)
+    mock_doc = MagicMock()
+    mock_doc.to_dict.return_value = {
+        "user_id": "user1",
+        "endpoint": "https://push.example.com/endpoint/abc123",
+        "p256dh": "dh_key",
+        "auth": "auth_secret",
+        "platform": "webpush",
+        "created_at": now.isoformat(),
+    }
+    where = mock_firestore_db.collection.return_value.where
+    where.return_value.stream.return_value = [mock_doc]
+
+    result = client.get_push_subscriptions("user1")
+
+    mock_firestore_db.collection.assert_called_with("pushSubscriptions")
+    where.assert_called_with("user_id", "==", "user1")
+    assert len(result) == 1
+    assert isinstance(result[0], PushSubscription)
+    assert result[0].user_id == "user1"
+
+
+def test_delete_push_subscription_when_exists_and_matches_user(mock_firestore_db):
+    """delete_push_subscription が endpoint のハッシュでドキュメントを取得し、user_id が一致すれば削除する"""
+    from shared.firestore_client import FirestoreClient
+    client = FirestoreClient()
+
+    endpoint = "https://push.example.com/endpoint/abc123"
+    expected_doc_id = hashlib.sha256(endpoint.encode()).hexdigest()
+
+    mock_doc = MagicMock()
+    mock_doc.exists = True
+    mock_doc.to_dict.return_value = {"user_id": "user1", "endpoint": endpoint}
+
+    mock_doc_ref = MagicMock()
+    mock_doc_ref.get.return_value = mock_doc
+    mock_firestore_db.collection.return_value.document.return_value = mock_doc_ref
+
+    client.delete_push_subscription("user1", endpoint)
+
+    mock_firestore_db.collection.assert_called_with("pushSubscriptions")
+    mock_firestore_db.collection.return_value.document.assert_called_with(expected_doc_id)
+    mock_doc_ref.get.assert_called_once()
+    mock_doc_ref.delete.assert_called_once()
+
+
+def test_delete_push_subscription_noop_when_doc_missing(mock_firestore_db):
+    """delete_push_subscription が doc に存在しないときはスキップしても例外を出さない"""
+    from shared.firestore_client import FirestoreClient
+    client = FirestoreClient()
+
+    endpoint = "https://push.example.com/endpoint/abc123"
+
+    mock_doc = MagicMock()
+    mock_doc.exists = False
+
+    mock_doc_ref = MagicMock()
+    mock_doc_ref.get.return_value = mock_doc
+    mock_firestore_db.collection.return_value.document.return_value = mock_doc_ref
+
+    # 例外を出さずに完了する
+    client.delete_push_subscription("user1", endpoint)
+
+    mock_doc_ref.delete.assert_not_called()
+
+
+def test_delete_push_subscription_noop_when_user_mismatch(mock_firestore_db):
+    """delete_push_subscription が user_id が異なるときはスキップして削除しない"""
+    from shared.firestore_client import FirestoreClient
+    client = FirestoreClient()
+
+    endpoint = "https://push.example.com/endpoint/abc123"
+
+    mock_doc = MagicMock()
+    mock_doc.exists = True
+    mock_doc.to_dict.return_value = {"user_id": "user2", "endpoint": endpoint}
+
+    mock_doc_ref = MagicMock()
+    mock_doc_ref.get.return_value = mock_doc
+    mock_firestore_db.collection.return_value.document.return_value = mock_doc_ref
+
+    # user1 で削除しようとしているが、ドキュメントは user2 のもの
+    client.delete_push_subscription("user1", endpoint)
+
+    # 削除は呼ばれない（セキュリティ: 他ユーザーの購読は削除できない）
+    mock_doc_ref.delete.assert_not_called()
+
+
+def test_save_push_subscription_same_endpoint_twice_upserts(mock_firestore_db):
+    """同じ endpoint を 2 回 save した場合、同じ doc-id で upsert される（重複なし）"""
+    from shared.firestore_client import FirestoreClient
+    client = FirestoreClient()
+
+    now = datetime(2026, 6, 14, 12, 0, 0, tzinfo=timezone.utc)
+    endpoint = "https://push.example.com/endpoint/same"
+    sub1 = PushSubscription(
+        user_id="user1",
+        endpoint=endpoint,
+        p256dh="key1",
+        auth="auth1",
+        created_at=now,
+    )
+    sub2 = PushSubscription(
+        user_id="user1",
+        endpoint=endpoint,
+        p256dh="key2",
+        auth="auth2",
+        created_at=now,
+    )
+
+    mock_doc_ref = MagicMock()
+    mock_firestore_db.collection.return_value.document.return_value = mock_doc_ref
+
+    client.save_push_subscription(sub1)
+    client.save_push_subscription(sub2)
+
+    expected_doc_id = hashlib.sha256(endpoint.encode()).hexdigest()
+    # 同じ doc-id で 2 回 set が呼ばれる（merge=True なので上書きされる）
+    assert mock_firestore_db.collection.return_value.document.call_count == 2
+    # 両方とも同じ doc-id を使う
+    calls = mock_firestore_db.collection.return_value.document.call_args_list
+    assert calls[0][0][0] == expected_doc_id
+    assert calls[1][0][0] == expected_doc_id
 
 
 # ---------- Job locks (debounce) ----------
