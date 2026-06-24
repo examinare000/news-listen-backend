@@ -138,6 +138,9 @@ class Podcast(BaseModel):
     duration_seconds: int
     status: PodcastStatus
     error_message: str | None = None
+    # WHY: 既存 Firestore ドキュメントには無いため default=0.0 で後方互換
+    # （onboarding_completed と同手法。クライアント送信値は信用せず duration_seconds で clamp）
+    playback_position_seconds: float = 0.0
     created_at: datetime
     user_id: str
 
