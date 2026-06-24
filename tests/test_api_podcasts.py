@@ -97,3 +97,47 @@ def test_get_podcast_returns_signed_audio_url(api_client, mock_db, mock_storage)
         f"GCS blob path が返された: {audio_url!r}。"
         "ルーターで StorageClient.generate_audio_url() を呼ぶこと。"
     )
+
+
+def test_get_podcast_exposes_status(api_client, mock_db, mock_storage):
+    """GET /podcasts/{id} レスポンスに status フィールドが含まれること。"""
+    podcast = _make_podcast("pod1")
+    podcast.status = "completed"
+    mock_db.get_podcast.return_value = podcast
+    mock_storage.generate_audio_url.return_value = "https://storage.googleapis.com/signed"
+
+    response = api_client.get("/podcasts/pod1", headers={"X-API-Key": "test-key"})
+    assert response.status_code == 200
+    data = response.json()
+    assert "status" in data
+    assert data["status"] == "completed"
+
+
+def test_get_podcast_exposes_error_message_when_failed(api_client, mock_db, mock_storage):
+    """status="failed" の Podcast レスポンスに error_message が含まれること。"""
+    podcast = _make_podcast("pod2")
+    podcast.status = "failed"
+    podcast.error_message = "Audio generation failed: connection timeout"
+    mock_db.get_podcast.return_value = podcast
+    mock_storage.generate_audio_url.return_value = "https://storage.googleapis.com/signed"
+
+    response = api_client.get("/podcasts/pod2", headers={"X-API-Key": "test-key"})
+    assert response.status_code == 200
+    data = response.json()
+    assert "error_message" in data
+    assert data["error_message"] == "Audio generation failed: connection timeout"
+
+
+def test_list_podcasts_exposes_status(api_client, mock_db, mock_storage):
+    """GET /podcasts レスポンスの各要素に status フィールドが含まれること。"""
+    podcast = _make_podcast("pod1")
+    podcast.status = "processing"
+    mock_db.get_podcasts_for_user.return_value = [podcast]
+    mock_storage.generate_audio_url.return_value = "https://storage.googleapis.com/signed"
+
+    response = api_client.get("/podcasts", headers={"X-API-Key": "test-key"})
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["podcasts"]) == 1
+    assert "status" in data["podcasts"][0]
+    assert data["podcasts"][0]["status"] == "processing"
