@@ -48,6 +48,7 @@ class PodcastResponse(BaseModel):
     duration_seconds: int
     status: str
     error_message: str | None = None
+    playback_position_seconds: float = 0.0
     created_at: str  # ISO 8601
 
     @classmethod
@@ -77,12 +78,17 @@ class PodcastResponse(BaseModel):
             duration_seconds=podcast.duration_seconds,
             status=podcast.status,
             error_message=podcast.error_message,
+            playback_position_seconds=podcast.playback_position_seconds,
             created_at=podcast.created_at.isoformat(),
         )
 
 
 class PodcastListResponse(BaseModel):
     podcasts: list[PodcastResponse]
+
+
+class UpdatePlaybackPositionRequest(BaseModel):
+    position_seconds: float = Field(ge=0)  # 負値は 422
 
 
 class RssSourceRequest(BaseModel):
