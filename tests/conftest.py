@@ -87,6 +87,8 @@ def api_client(mock_db, mock_storage, mock_job_trigger, mock_audit):
             "API_KEY": "test-key",
             "USER_ID": "user1",
             "LOGIN_RATELIMIT_MAX_ATTEMPTS": "0",
+            "API_RATELIMIT_MAX_REQUESTS": "0",
+            "STAR_RATELIMIT_MAX_REQUESTS": "0",
         },
     ):
         import importlib
