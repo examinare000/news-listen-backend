@@ -58,14 +58,15 @@ def main() -> None:
     # KeyError で即座に失敗させる。os.environ.get("USER_ID", "default") のような
     # サイレントフォールバックは複数ユーザーのデータ混在バグを引き起こす。
     user_id = os.environ["USER_ID"]
-    difficulty = os.environ.get("DIFFICULTY", "toeic_900")
 
-    # 無効な difficulty はループ内の except Exception で吸収され全件生成失敗しても
-    # 正常終了扱いになるため、起動時に検証して早期失敗させる。
-    if difficulty not in _VALID_DIFFICULTIES:
+    # env DIFFICULTY が指定されていれば先に検証（バリデーション早期失敗）。
+    # 指定されていない場合は prefs から取得した後に検証する。
+    env_difficulty = os.environ.get("DIFFICULTY")
+    if env_difficulty and env_difficulty not in _VALID_DIFFICULTIES:
         raise SystemExit(
-            f"Invalid DIFFICULTY={difficulty!r}. Valid values: {_VALID_DIFFICULTIES}"
+            f"Invalid DIFFICULTY={env_difficulty!r}. Valid values: {_VALID_DIFFICULTIES}"
         )
+
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     db = FirestoreClient()
@@ -75,6 +76,17 @@ def main() -> None:
     tts_gen = TtsGenerator(gemini_client=gemini)
 
     prefs = db.get_user_prefs(user_id)
+
+    # env DIFFICULTY が指定されていれば使用。未指定・空の場合のみ prefs へフォールバック。
+    # WHY: env 未指定時のみ prefs.default_difficulty を採用し、既存経路（env 指定）は
+    # 後方互換を保つ。JobTrigger に env 組み立て責務を持たせない（境界の漏れ防止）。
+    difficulty = env_difficulty or prefs.default_difficulty
+
+    # prefs からのフォールバック時のバリデーション（env 指定時は上記で実施済み）。
+    if not env_difficulty and difficulty not in _VALID_DIFFICULTIES:
+        raise SystemExit(
+            f"Invalid DIFFICULTY={difficulty!r}. Valid values: {_VALID_DIFFICULTIES}"
+        )
     all_articles = db.get_recent_articles(limit=500)
     articles_by_id = {a.id: a for a in all_articles}
 

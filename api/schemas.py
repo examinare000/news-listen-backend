@@ -5,6 +5,11 @@ from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field, HttpUrl, field_validator
 
+# DifficultyLevel は難易度 Literal の正本（shared/models.py）。
+# from __future__ import annotations 下でも Pydantic がフィールド注釈を
+# クラス生成時に解決するため、TYPE_CHECKING ではなく実行時 import が必要。
+from shared.models import DifficultyLevel
+
 if TYPE_CHECKING:
     from shared.models import Podcast
 
@@ -271,3 +276,24 @@ class AuditLogResponse(BaseModel):
 
 class AuditLogsResponse(BaseModel):
     logs: list[AuditLogResponse]
+
+
+# ── ユーザー設定（デフォルト難易度・再生速度・ダイジェスト） ────────────────────────
+
+
+class PreferencesResponse(BaseModel):
+    """ユーザープリファレンス公開モデル。"""
+
+    default_difficulty: str
+    default_playback_speed: float
+    digest_enabled: bool
+    digest_article_count: int
+
+
+class UpdatePreferencesRequest(BaseModel):
+    """プリファレンス部分更新リクエスト。指定フィールドのみ変更する（他は保持）。"""
+
+    default_difficulty: DifficultyLevel | None = None  # 不正値は Pydantic が 422 に変換
+    default_playback_speed: float | None = Field(default=None, gt=0)
+    digest_enabled: bool | None = None
+    digest_article_count: int | None = Field(default=None, ge=1, le=20)

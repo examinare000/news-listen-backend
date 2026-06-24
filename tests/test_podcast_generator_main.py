@@ -586,3 +586,57 @@ def test_cache_miss_per_user_podcast_uses_generated_intro(mocks):
 
     saved_podcast = mocks["db"].save_podcast.call_args[0][0]
     assert saved_podcast.japanese_intro_text == "生成されたイントロ"
+
+
+# ──────────────────────────────────────────────
+# T9: difficulty フォールバック（env → prefs）
+# ──────────────────────────────────────────────
+
+
+def test_difficulty_falls_back_to_prefs_when_env_absent(mocks):
+    """env DIFFICULTY が未指定・空のとき、prefs.default_difficulty へフォールバック。
+
+    キャッシュキーや生成に prefs から取得した difficulty が使われることを検証する。
+    """
+    from unittest.mock import patch
+
+    # env から DIFFICULTY を除去
+    env = dict(_BASE_ENV)
+    del env["DIFFICULTY"]
+
+    with patch.dict("os.environ", env, clear=True):
+        # prefs.default_difficulty="ielts_7" をセット
+        mocks["db"].get_user_prefs.return_value = _make_prefs(
+            starred=[ARTICLE_ID]
+        )
+        mocks["db"].get_user_prefs.return_value.default_difficulty = "ielts_7"
+
+        mocks["main"].main()
+
+        # cache_key_for が ielts_7 を使用した cache_key を生成
+        # save_podcast_cache が呼ばれ、その difficulty 部分が ielts_7 であることを確認
+        mocks["db"].save_podcast_cache.assert_called()
+        saved_cache = mocks["db"].save_podcast_cache.call_args[0][0]
+        assert saved_cache.difficulty == "ielts_7"
+        assert "ielts_7" in saved_cache.cache_key
+
+
+def test_difficulty_env_takes_precedence_over_prefs(mocks):
+    """env DIFFICULTY が指定されている場合、prefs.default_difficulty より優先される（後方互換）。"""
+    # env に DIFFICULTY="toeic_600" を指定
+    env = dict(_BASE_ENV)
+    env["DIFFICULTY"] = "toeic_600"
+
+    with patch.dict("os.environ", env, clear=True):
+        # prefs.default_difficulty="ielts_7" だが、env が優先される
+        mocks["db"].get_user_prefs.return_value = _make_prefs(
+            starred=[ARTICLE_ID]
+        )
+        mocks["db"].get_user_prefs.return_value.default_difficulty = "ielts_7"
+
+        mocks["main"].main()
+
+        # save_podcast_cache が呼ばれ、その difficulty 部分が toeic_600 であること
+        saved_cache = mocks["db"].save_podcast_cache.call_args[0][0]
+        assert saved_cache.difficulty == "toeic_600"
+        assert "toeic_600" in saved_cache.cache_key
