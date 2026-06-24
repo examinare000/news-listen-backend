@@ -59,22 +59,39 @@ class TestCreateUser:
         mock_db.get_user.return_value = None
         resp = api_client.post(
             "/admin/users",
-            json={"username": "Carol", "password": "carol-pass", "role": "user"},
+            json={"username": "Carol", "password": "Str0ng-Pass!23", "role": "user"},
             headers=AUTH,
         )
         assert resp.status_code == 201
         saved = mock_db.save_user.call_args[0][0]
         assert saved.username == "carol"  # 正規化される
         assert saved.user_id  # 採番される
-        assert verify_password("carol-pass", saved.password_hash)
-        assert "carol-pass" not in resp.text
+        assert verify_password("Str0ng-Pass!23", saved.password_hash)
+        assert "Str0ng-Pass!23" not in resp.text
+
+    def test_weak_password_422_does_not_echo_plaintext(self, api_client, mock_db):
+        """強度検証 422 のレスポンスに送信した平文パスワードが含まれないこと。
+
+        FastAPI 既定の検証エラーは input（送信値）を本文に載せるため、
+        機微フィールドは伏せる必要がある（資格情報の漏洩防止）。
+        """
+        mock_db.get_session.return_value = _session("admin")
+        mock_db.get_user.return_value = None
+        resp = api_client.post(
+            "/admin/users",
+            json={"username": "dave", "password": "weakpw-secret", "role": "user"},
+            headers=AUTH,
+        )
+        assert resp.status_code == 422
+        assert "weakpw-secret" not in resp.text
+        mock_db.save_user.assert_not_called()
 
     def test_duplicate_returns_409(self, api_client, mock_db):
         mock_db.get_session.return_value = _session("admin")
         mock_db.get_user.return_value = _user("carol")
         resp = api_client.post(
             "/admin/users",
-            json={"username": "carol", "password": "carol-pass"},
+            json={"username": "carol", "password": "Str0ng-Pass!23"},
             headers=AUTH,
         )
         assert resp.status_code == 409
@@ -87,19 +104,19 @@ class TestUpdateUser:
         mock_db.get_user.return_value = _user("bob", role="user")
         resp = api_client.patch(
             "/admin/users/bob",
-            json={"role": "admin", "new_password": "reset-pass"},
+            json={"role": "admin", "new_password": "Str0ng-Pass!23"},
             headers=AUTH,
         )
         assert resp.status_code == 200
         saved = mock_db.save_user.call_args[0][0]
         assert saved.role == "admin"
-        assert verify_password("reset-pass", saved.password_hash)
+        assert verify_password("Str0ng-Pass!23", saved.password_hash)
 
     def test_password_reset_revokes_sessions(self, api_client, mock_db):
         mock_db.get_session.return_value = _session("admin")
         mock_db.get_user.return_value = _user("bob", role="user")
         resp = api_client.patch(
-            "/admin/users/bob", json={"new_password": "reset-pass"}, headers=AUTH
+            "/admin/users/bob", json={"new_password": "Str0ng-Pass!23"}, headers=AUTH
         )
         assert resp.status_code == 200
         # 旧資格情報での継続アクセスを断つためセッションを失効させる。
@@ -174,7 +191,7 @@ class TestAuditInstrumentation:
         mock_db.get_user.return_value = None
         api_client.post(
             "/admin/users",
-            json={"username": "carol", "password": "carol-pass", "role": "user"},
+            json={"username": "carol", "password": "Str0ng-Pass!23", "role": "user"},
             headers=AUTH,
         )
         assert "user_create" in self._actions(mock_audit)
@@ -194,7 +211,7 @@ class TestAuditInstrumentation:
         mock_db.get_session.return_value = _session("admin")
         mock_db.get_user.return_value = _user("bob", role="user")
         api_client.patch(
-            "/admin/users/bob", json={"new_password": "reset-pass"}, headers=AUTH
+            "/admin/users/bob", json={"new_password": "Str0ng-Pass!23"}, headers=AUTH
         )
         actions = self._actions(mock_audit)
         assert "user_password_reset" in actions
@@ -227,7 +244,7 @@ class TestAuditInstrumentation:
         mock_db.get_user.return_value = None
         api_client.post(
             "/admin/users",
-            json={"username": "carol", "password": "super-secret", "role": "user"},
+            json={"username": "carol", "password": "Str0ng-Pass!23", "role": "user"},
             headers=AUTH,
         )
-        assert "super-secret" not in str(mock_audit.record.call_args_list)
+        assert "Str0ng-Pass!23" not in str(mock_audit.record.call_args_list)

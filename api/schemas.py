@@ -148,7 +148,8 @@ class OnboardingStatusResponse(BaseModel):
 
 # ── 認証・ユーザー管理 ────────────────────────────────────────────
 # パスワードは bcrypt の 72 バイト制限に合わせ最大長を制限する。
-_PASSWORD_MIN = 8
+# _PASSWORD_MIN は 1 に（実際の最小値は validate_password_strength で強制）
+_PASSWORD_MIN = 1
 _PASSWORD_MAX = 72
 
 
@@ -180,6 +181,15 @@ class PasswordChangeRequest(BaseModel):
     current_password: str = Field(min_length=1, max_length=_PASSWORD_MAX)
     new_password: str = Field(min_length=_PASSWORD_MIN, max_length=_PASSWORD_MAX)
 
+    @field_validator("new_password", mode="after")
+    @classmethod
+    def _validate_new_password_strength(cls, v):
+        """新しいパスワードの強度を検証（username=None, login exemption）。"""
+        from shared.password_policy import validate_password_strength
+
+        validate_password_strength(v, username=None)
+        return v
+
 
 class ProfileUpdateRequest(BaseModel):
     display_name: str = Field(min_length=1, max_length=64)
@@ -191,6 +201,19 @@ class UserCreateRequest(BaseModel):
     display_name: str | None = Field(default=None, max_length=64)
     role: Literal["admin", "user"] = "user"
 
+    @field_validator("password", mode="after")
+    @classmethod
+    def _validate_password_strength(cls, v, info):
+        """パスワード強度を検証（ユーザー名を含める）。
+
+        field_validator の mode="after" では info.data で他フィールドの値にアクセス可能。
+        """
+        from shared.password_policy import validate_password_strength
+
+        username = info.data.get("username")
+        validate_password_strength(v, username=username)
+        return v
+
 
 class UserUpdateRequest(BaseModel):
     """管理者によるユーザー更新。指定フィールドのみ変更する。"""
@@ -198,6 +221,18 @@ class UserUpdateRequest(BaseModel):
     role: Literal["admin", "user"] | None = None
     new_password: str | None = Field(default=None, min_length=_PASSWORD_MIN, max_length=_PASSWORD_MAX)
     display_name: str | None = Field(default=None, max_length=64)
+
+    @field_validator("new_password", mode="after")
+    @classmethod
+    def _validate_new_password_strength(cls, v):
+        """新しいパスワードの強度を検証（None は許容）。"""
+        if v is None:
+            return v
+
+        from shared.password_policy import validate_password_strength
+
+        validate_password_strength(v, username=None)
+        return v
 
 
 class UserListResponse(BaseModel):

@@ -168,6 +168,11 @@ def login(
         db.clear_login_attempts(ip_key)
         db.clear_login_attempts(user_key)
 
+    # セッションローテーション: 既存トークン提示時は新発行前に旧セッションを失効（固定化対策・冪等）。
+    old_token = _extract_session_token(request)
+    if old_token:
+        db.delete_session(hash_token(old_token))
+
     token = generate_session_token()
     ttl_hours = _session_ttl_hours()
     now = datetime.now(timezone.utc)

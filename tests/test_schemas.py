@@ -139,3 +139,120 @@ def test_featured_site_request_skips_thumbnail_url_validation_when_none():
         # url は検証されるが，thumbnail_url は None なので検証されない
         # validate_url は 1 回だけ呼ばれる（url field のみ）
         assert mock_validate.call_count == 1
+
+
+# === パスワード強度検証 ===
+
+
+class TestUserCreateRequestPasswordValidation:
+    """UserCreateRequest のパスワード強度検証。"""
+
+    def test_weak_password_raises_validation_error(self):
+        """弱いパスワードは ValidationError を raise。"""
+        from api.schemas import UserCreateRequest
+
+        with pytest.raises(ValidationError) as exc_info:
+            UserCreateRequest(
+                username="alice",
+                password="weak",  # 短すぎる
+                role="user",
+            )
+        assert "at least 12 characters" in str(exc_info.value).lower()
+
+    def test_password_equals_username_raises_validation_error(self):
+        """password == username は ValidationError を raise。"""
+        from api.schemas import UserCreateRequest
+
+        with pytest.raises(ValidationError) as exc_info:
+            UserCreateRequest(
+                username="MyPassword123!",
+                password="MyPassword123!",  # username と同じ
+                role="user",
+            )
+        assert "must not contain the username" in str(exc_info.value).lower()
+
+    def test_password_contains_username_raises_validation_error(self):
+        """password に username を部分文字列として含む場合は ValidationError。"""
+        from api.schemas import UserCreateRequest
+
+        with pytest.raises(ValidationError) as exc_info:
+            UserCreateRequest(
+                username="alice",  # 5文字
+                password="alice2024Secret!",  # "alice" を含む
+                role="user",
+            )
+        assert "must not contain the username" in str(exc_info.value).lower()
+
+    def test_strong_password_accepted(self):
+        """強いパスワードは受理。"""
+        from api.schemas import UserCreateRequest
+
+        req = UserCreateRequest(
+            username="bob",
+            password="Str0ng-Pass!23",
+            role="user",
+        )
+        assert req.username == "bob"
+        assert req.password == "Str0ng-Pass!23"
+
+
+class TestPasswordChangeRequestValidation:
+    """PasswordChangeRequest のパスワード強度検証。"""
+
+    def test_weak_new_password_raises_validation_error(self):
+        """弱い new_password は ValidationError。"""
+        from api.schemas import PasswordChangeRequest
+
+        with pytest.raises(ValidationError) as exc_info:
+            PasswordChangeRequest(
+                current_password="OldPass123!",
+                new_password="weak",
+            )
+        assert "at least 12 characters" in str(exc_info.value).lower()
+
+    def test_strong_new_password_accepted(self):
+        """強い new_password は受理。"""
+        from api.schemas import PasswordChangeRequest
+
+        req = PasswordChangeRequest(
+            current_password="OldPass123!",
+            new_password="NewPass123!456",
+        )
+        assert req.new_password == "NewPass123!456"
+
+
+class TestUserUpdateRequestValidation:
+    """UserUpdateRequest のパスワード強度検証。"""
+
+    def test_weak_new_password_raises_validation_error(self):
+        """弱い new_password は ValidationError。"""
+        from api.schemas import UserUpdateRequest
+
+        with pytest.raises(ValidationError) as exc_info:
+            UserUpdateRequest(
+                new_password="weak",
+            )
+        assert "at least 12 characters" in str(exc_info.value).lower()
+
+    def test_new_password_none_skips_validation(self):
+        """new_password=None（または未指定）の場合は検証をスキップ。"""
+        from api.schemas import UserUpdateRequest
+
+        # None を明示的に指定
+        req = UserUpdateRequest(new_password=None)
+        assert req.new_password is None
+
+        # 未指定（デフォルト）
+        req = UserUpdateRequest()
+        assert req.new_password is None
+
+    def test_strong_new_password_accepted(self):
+        """強い new_password は受理。"""
+        from api.schemas import UserUpdateRequest
+
+        req = UserUpdateRequest(
+            role="admin",
+            new_password="Str0ng-Pass!23",
+        )
+        assert req.new_password == "Str0ng-Pass!23"
+        assert req.role == "admin"

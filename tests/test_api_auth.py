@@ -84,6 +84,77 @@ class TestLogin:
         )
         mock_db.get_user.assert_called_with("alice")
 
+    def test_session_rotation_with_prior_token(self, api_client, mock_db):
+        """ログイン時に既存トークンが提示されている場合、新発行前に旧セッションを失効させる。"""
+        from shared.security import hash_token
+
+        mock_db.get_user.return_value = _user(password="correct-horse")
+
+        resp = api_client.post(
+            "/auth/login",
+            json={"username": "alice", "password": "correct-horse"},
+            headers={**API_HEADERS, "Authorization": "Bearer old-token-raw"},
+        )
+
+        assert resp.status_code == 200
+        # 旧トークンのハッシュが delete_session に渡されていることを検証
+        mock_db.delete_session.assert_called_once_with(hash_token("old-token-raw"))
+        # 新セッションも作成されている
+        mock_db.create_session.assert_called_once()
+
+    def test_session_rotation_without_prior_token(self, api_client, mock_db):
+        """ログイン時に既存トークンが提示されていない場合、delete_session は呼ばれない。"""
+        mock_db.get_user.return_value = _user(password="correct-horse")
+
+        resp = api_client.post(
+            "/auth/login",
+            json={"username": "alice", "password": "correct-horse"},
+            headers=API_HEADERS,
+        )
+
+        assert resp.status_code == 200
+        # 旧トークンがないため delete_session は呼ばれない
+        mock_db.delete_session.assert_not_called()
+        # 新セッションは作成される
+        mock_db.create_session.assert_called_once()
+
+    def test_failed_login_does_not_rotate_session(self, api_client, mock_db):
+        """認証失敗時は、被害者のトークンが提示されても旧セッションを失効させない。
+
+        ローテーションを資格情報検証より前に置くと、攻撃者が誤った資格情報と
+        被害者のトークンを送るだけで被害者のセッションを失効できてしまう。
+        この不変条件（401 で early-return しローテーションに到達しない）を固定する。
+        """
+        mock_db.get_user.return_value = _user(password="correct-horse")
+
+        resp = api_client.post(
+            "/auth/login",
+            json={"username": "alice", "password": "wrong-password"},
+            headers={**API_HEADERS, "Authorization": "Bearer victim-token"},
+        )
+
+        assert resp.status_code == 401
+        mock_db.delete_session.assert_not_called()
+
+    def test_login_with_existing_weak_password_allowed(self, api_client, mock_db):
+        """ログイン時は弱いパスワードでも OK（create/change/update 時のみ検証）。
+
+        既存ユーザーが以前のポリシーで設定した弱いパスワードでもログイン可能。
+        password_policy の検証は schema (create/change/update) でのみ適用。
+        """
+        # "correct-horse" は強度が低いが、ログイン時は検証されない
+        mock_db.get_user.return_value = _user(password="correct-horse")
+
+        resp = api_client.post(
+            "/auth/login",
+            json={"username": "alice", "password": "correct-horse"},
+            headers=API_HEADERS,
+        )
+
+        # login exemption: ログイン成功
+        assert resp.status_code == 200
+        assert resp.json()["token"]
+
 
 class TestMe:
     def test_returns_current_user(self, api_client, mock_db):
@@ -116,24 +187,24 @@ class TestLogout:
 class TestChangePassword:
     def test_success(self, api_client, mock_db):
         mock_db.get_session.return_value = _valid_session()
-        mock_db.get_user.return_value = _user(password="old-password")
+        mock_db.get_user.return_value = _user(password="correct-horse")
         resp = api_client.post(
             "/auth/password",
-            json={"current_password": "old-password", "new_password": "new-password-1"},
+            json={"current_password": "correct-horse", "new_password": "Str0ng-Pass!23"},
             headers={**API_HEADERS, "Authorization": "Bearer raw"},
         )
         assert resp.status_code == 200
         saved = mock_db.save_user.call_args[0][0]
         from shared.security import verify_password
 
-        assert verify_password("new-password-1", saved.password_hash)
+        assert verify_password("Str0ng-Pass!23", saved.password_hash)
 
     def test_wrong_current_password_returns_400(self, api_client, mock_db):
         mock_db.get_session.return_value = _valid_session()
-        mock_db.get_user.return_value = _user(password="old-password")
+        mock_db.get_user.return_value = _user(password="correct-horse")
         resp = api_client.post(
             "/auth/password",
-            json={"current_password": "nope", "new_password": "new-password-1"},
+            json={"current_password": "nope", "new_password": "Str0ng-Pass!23"},
             headers={**API_HEADERS, "Authorization": "Bearer raw"},
         )
         assert resp.status_code == 400
