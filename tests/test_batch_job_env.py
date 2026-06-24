@@ -4,9 +4,8 @@ USER_ID が未設定の場合はサイレントに "default" で動作せず、
 クライアント初期化の前に即座に KeyError で失敗することを確認する。
 データ混在バグを防ぐための防御的プログラミング。
 """
-import os
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 
 def _env_for_batch_without_user_id(**extras) -> dict:

@@ -5,7 +5,7 @@
 script_generator / main）をまたぐデータフローをカバーする。
 """
 from datetime import datetime, timezone
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import patch
 
 import pytest
 
