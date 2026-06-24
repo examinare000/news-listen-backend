@@ -441,6 +441,83 @@ class FirestoreClient:
         ref = self._db.collection("loginAttempts").document(doc_id)
         ref.delete()
 
+    def consume_rate_limit(
+        self, key: str, now: datetime | None = None, max_requests: int = 0, window_seconds: int = 60
+    ) -> tuple[bool, int]:
+        """汎用 API レート制限。固定ウィンドウ内のカウンタをトランザクションで管理する。
+
+        コレクション rateLimits、doc_id f"rateLimits_{key}" に記録。スキーマ:
+        {"key": str, "count": int, "window_start": timestamp}。
+
+        ウィンドウが失効した（経過秒数 >= window_seconds）か、または初回なら
+        count=1, window_start=now でリセット。ウィンドウ内かつ count < max_requests なら
+        count を +1。超過（count >= max_requests）なら、allowed=False を返しカウント非更新。
+
+        超過試行（allowed=False）は doc を更新しない（非カウント）。
+
+        Args:
+            key: レート制限キー（"api:ip:..."、"api:user:..." 等）
+            now: 現在時刻（デフォルト: UTC now）
+            max_requests: 閾値（0 で無効化・即座に return）
+            window_seconds: ウィンドウ幅（秒）
+
+        Returns:
+            (allowed: bool, retry_after: int)
+                allowed=True: カウント許可。retry_after=0。
+                allowed=False: 超過。retry_after=窓終了までの秒数（最小1）。
+        """
+        if max_requests <= 0:
+            # 無効化: DB アクセス無しで即座に return
+            return True, 0
+
+        if now is None:
+            now = datetime.now(timezone.utc)
+
+        doc_id = f"rateLimits_{key}"
+        ref = self._db.collection("rateLimits").document(doc_id)
+
+        @firestore.transactional
+        def _consume(transaction) -> tuple[bool, int]:
+            snapshot = ref.get(transaction=transaction)
+            data = snapshot.to_dict() if snapshot.exists else {}
+            count = data.get("count", 0)
+            window_start = data.get("window_start")
+
+            # ウィンドウ失効判定。失効条件: window_start 無しか、経過秒 >= window_seconds
+            if window_start is None or (now - window_start).total_seconds() >= window_seconds:
+                # ウィンドウ失効。リセット。
+                count = 1
+                window_start = now
+                transaction.set(
+                    ref,
+                    {
+                        "key": key,
+                        "count": count,
+                        "window_start": window_start,
+                    },
+                )
+                return True, 0
+
+            # ウィンドウ内。count をチェック。
+            if count >= max_requests:
+                # 既に max に達している。超過試行。
+                retry_after = max(1, int(window_seconds - (now - window_start).total_seconds()))
+                return False, retry_after
+
+            # ウィンドウ内かつ max 未到達。+1 して保存。
+            count += 1
+            transaction.set(
+                ref,
+                {
+                    "key": key,
+                    "count": count,
+                    "window_start": window_start,
+                },
+            )
+            return True, 0
+
+        return _consume(self._db.transaction())
+
     # ---------- Audit logs ----------
 
     def append_audit_log(self, audit: AuditLog) -> str:
