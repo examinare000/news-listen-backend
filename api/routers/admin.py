@@ -10,10 +10,13 @@
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from api.dependencies import get_firestore_client, require_admin
+from api.dependencies import get_firestore_client, require_admin, get_audit_logger, get_client_ip
+from api.audit import AuditLogger
 from api.schemas import (
+    AuditLogsResponse,
+    AuditLogResponse,
     FeaturedSiteRequest,
     FeaturedSiteResponse,
     FeaturedSitesResponse,
@@ -23,7 +26,7 @@ from api.schemas import (
     UserUpdateRequest,
 )
 from shared.firestore_client import FirestoreClient
-from shared.models import FeaturedSite, User
+from shared.models import FeaturedSite, User, Session
 from shared.security import hash_password
 from shared.utils import normalize_username, slugify
 
@@ -126,8 +129,11 @@ def list_users(db: FirestoreClient = Depends(get_firestore_client)):
     dependencies=[Depends(require_admin)],
 )
 def create_user(
+    http_request: Request,
     request: UserCreateRequest,
     db: FirestoreClient = Depends(get_firestore_client),
+    actor: Session = Depends(require_admin),
+    audit_logger: AuditLogger = Depends(get_audit_logger),
 ):
     """ユーザーを新規作成する。username は正規化して doc-id にする。"""
     username = normalize_username(request.username)
@@ -145,6 +151,13 @@ def create_user(
         updated_at=now,
     )
     db.save_user(user)
+    # ユーザー作成を記録
+    audit_logger.record(
+        action="user_create",
+        actor=actor,
+        target_username=username,
+        ip=get_client_ip(http_request),
+    )
     return _user_to_response(user)
 
 
@@ -155,21 +168,30 @@ def create_user(
 )
 def update_user(
     username: str,
+    http_request: Request,
     request: UserUpdateRequest,
     db: FirestoreClient = Depends(get_firestore_client),
+    actor: Session = Depends(require_admin),
+    audit_logger: AuditLogger = Depends(get_audit_logger),
 ):
     """ロール変更・パスワードリセット・表示名変更。指定フィールドのみ更新する。
 
     最後の admin を降格すると管理不能になるため 409 で防ぐ。降格・パスワードリセット時は
     当該ユーザーのセッションを失効させ、変更前の権限での継続アクセスを断つ。
     """
-    user = db.get_user(normalize_username(username))
+    normalized = normalize_username(username)
+    user = db.get_user(normalized)
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
 
     demoting_admin = request.role == "user" and user.role == "admin"
     if demoting_admin and _admin_count(db) <= 1:
         raise HTTPException(status_code=409, detail="Cannot demote the last admin")
+
+    # 変更を判定（監査ログのアクション種別決定用）
+    role_changed = request.role is not None and request.role != user.role
+    password_reset = request.new_password is not None
+    display_name_changed = request.display_name is not None and request.display_name != user.display_name
 
     if request.role is not None:
         user.role = request.role
@@ -180,16 +202,55 @@ def update_user(
     user.updated_at = datetime.now(timezone.utc)
     db.save_user(user)
 
+    # 監査ログを記録（変更種別ごとに異なるアクションを使用）
+    client_ip = get_client_ip(http_request)
+    if role_changed:
+        audit_logger.record(
+            action="user_role_change",
+            actor=actor,
+            target_username=normalized,
+            ip=client_ip,
+            details={"new_role": request.role},
+        )
+    if password_reset:
+        audit_logger.record(
+            action="user_password_reset",
+            actor=actor,
+            target_username=normalized,
+            ip=client_ip,
+        )
+    # 表示名のみの一般更新は user_update として記録する
+    # （role / password の変更は上で専用アクションとして記録済み）。
+    if display_name_changed and not role_changed and not password_reset:
+        audit_logger.record(
+            action="user_update",
+            actor=actor,
+            target_username=normalized,
+            ip=client_ip,
+            details={"field": "display_name"},
+        )
+
     # 降格・パスワードリセットは既存セッションを失効させる（旧権限/旧資格情報での継続を断つ）。
     if demoting_admin or request.new_password is not None:
-        db.delete_sessions_for_user(user.user_id)
+        session_count = db.delete_sessions_for_user(user.user_id)
+        # セッション失効時に記録（ベストエフォート）
+        audit_logger.record(
+            action="session_revoke",
+            actor=actor,
+            target_username=normalized,
+            ip=client_ip,
+            details={"revoked_session_count": session_count},
+        )
     return _user_to_response(user)
 
 
 @router.delete("/admin/users/{username}", dependencies=[Depends(require_admin)])
 def delete_user(
     username: str,
+    http_request: Request,
     db: FirestoreClient = Depends(get_firestore_client),
+    actor: Session = Depends(require_admin),
+    audit_logger: AuditLogger = Depends(get_audit_logger),
 ):
     """ユーザーを削除する。最後の admin は削除不可（409）。削除時にセッションも失効させる。"""
     normalized = normalize_username(username)
@@ -200,5 +261,47 @@ def delete_user(
         raise HTTPException(status_code=409, detail="Cannot delete the last admin")
     db.delete_user(normalized)
     # 削除済みユーザーが TTL 満了まで API を叩けないようセッションを失効させる。
-    db.delete_sessions_for_user(user.user_id)
+    session_count = db.delete_sessions_for_user(user.user_id)
+    # ユーザー削除を記録
+    audit_logger.record(
+        action="user_delete",
+        actor=actor,
+        target_username=normalized,
+        ip=get_client_ip(http_request),
+        details={"revoked_session_count": session_count},
+    )
     return {"status": "deleted", "username": normalized}
+
+
+# ── 監査ログ ────────────────────────────────────────────
+
+
+@router.get("/admin/audit-logs", response_model=AuditLogsResponse, dependencies=[Depends(require_admin)])
+def list_audit_logs(
+    action: str | None = Query(None),
+    limit: int = Query(50, ge=1, le=500),
+    db: FirestoreClient = Depends(get_firestore_client),
+):
+    """監査ログ一覧を取得する（admin のみ）。
+
+    action フィルタで特定のアクション（login_success など）のみ抽出可能。
+    limit で取得件数を制限（既定 50、上限 500）。
+    timestamp 降順で返す。
+
+    security note: actor_user_id は返さない（内部 UUID の露出防止）。
+    レスポンスには actor_username / target_username / ip / action / timestamp / details のみ。
+    """
+    logs = db.list_audit_logs(action=action, limit=limit)
+    # AuditLog を AuditLogResponse に変換（actor_user_id は除外）
+    responses = [
+        AuditLogResponse(
+            action=log.action,
+            timestamp=log.timestamp.isoformat(),
+            actor_username=log.actor_username,
+            target_username=log.target_username,
+            ip=log.ip,
+            details=log.details,
+        )
+        for log in logs
+    ]
+    return AuditLogsResponse(logs=responses)

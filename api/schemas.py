@@ -202,3 +202,25 @@ class UserUpdateRequest(BaseModel):
 
 class UserListResponse(BaseModel):
     users: list[UserResponse]
+
+
+# ── 監査ログ ────────────────────────────────────────────
+
+
+class AuditLogResponse(BaseModel):
+    """監査ログエントリーのレスポンス。
+
+    actor_user_id は内部 UUID であり、セキュリティ上の理由から API レスポンスに含めない。
+    レスポンスには actor_username / target_username / ip / action / timestamp / details のみ返す。
+    """
+
+    action: str
+    timestamp: str  # ISO 8601
+    actor_username: str | None = None
+    target_username: str | None = None
+    ip: str | None = None
+    details: dict | None = None
+
+
+class AuditLogsResponse(BaseModel):
+    logs: list[AuditLogResponse]
