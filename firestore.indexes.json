@@ -17,6 +17,14 @@
         { "fieldPath": "type", "order": "ASCENDING" },
         { "fieldPath": "article_ids", "arrayConfig": "CONTAINS" }
       ]
+    },
+    {
+      "collectionGroup": "auditLogs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "action", "order": "ASCENDING" },
+        { "fieldPath": "timestamp", "order": "DESCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []
