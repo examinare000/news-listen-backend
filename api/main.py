@@ -3,8 +3,11 @@ import hmac
 import logging
 import os
 
-from fastapi import FastAPI, HTTPException, Security, status
+from fastapi import FastAPI, HTTPException, Request, Security, status
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.security.api_key import APIKeyHeader
 
 from api.cors_config import build_cors_options
@@ -15,7 +18,31 @@ _logger = logging.getLogger(__name__)
 
 API_KEY_HEADER = APIKeyHeader(name="X-API-Key", auto_error=False)
 
+# 検証エラー本文に平文を載せてはならない機微フィールド（資格情報の漏洩防止）。
+_SENSITIVE_FIELDS = frozenset({"password", "new_password", "current_password"})
+
 app = FastAPI(title="Tech News Podcast API", version="0.1.0")
+
+
+@app.exception_handler(RequestValidationError)
+async def _redact_validation_errors(request: Request, exc: RequestValidationError):
+    """422 検証エラーから機微フィールドの送信値（input/ctx）を伏せて返す。
+
+    FastAPI 既定のハンドラは各エラーに input（送信された生値）を含めるため、
+    パスワード等を弱い値で送ると 422 応答本文に平文が反映されてしまう。
+    機微フィールドに該当するエラーのみ input/ctx を除去する（他は既定どおり）。
+    """
+    sanitized = []
+    for err in exc.errors():
+        item = dict(err)
+        if any(part in _SENSITIVE_FIELDS for part in item.get("loc", ())):
+            item.pop("input", None)
+            item.pop("ctx", None)
+        sanitized.append(item)
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content=jsonable_encoder({"detail": sanitized}),
+    )
 
 # CORS と セキュリティヘッダ ミドルウェアを追加。
 # ミドルウェアの追加順序は逆順で適用される（後に add されたものが外側）。
