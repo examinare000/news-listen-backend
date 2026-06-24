@@ -14,7 +14,7 @@ from api.cors_config import build_cors_options
 from api.middleware.csrf import CsrfMiddleware, build_csrf_config
 from api.middleware.security_headers import SecurityHeadersMiddleware, build_security_headers
 from api.ratelimit import rate_limit
-from api.routers import admin, articles, auth, feed, podcasts, settings
+from api.routers import admin, articles, auth, feed, notifications, podcasts, settings
 
 _logger = logging.getLogger(__name__)
 
@@ -96,6 +96,11 @@ app.include_router(
 )
 app.include_router(
     settings.router,
+    prefix="",
+    dependencies=[Security(verify_api_key), Depends(rate_limit("api"))],
+)
+app.include_router(
+    notifications.router,
     prefix="",
     dependencies=[Security(verify_api_key), Depends(rate_limit("api"))],
 )

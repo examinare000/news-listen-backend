@@ -179,3 +179,18 @@ class AuditLog(BaseModel):
     target_username: str | None = None
     ip: str | None = None
     details: dict | None = None
+
+
+class PushSubscription(BaseModel):
+    """Web Push 購読情報。
+
+    Firestore コレクション `pushSubscriptions/{doc_id}` に対応する。
+    doc_id は endpoint の SHA-256 ハッシュ（冪等 upsert のため）。
+    """
+
+    user_id: str
+    endpoint: str
+    p256dh: str
+    auth: str
+    platform: str = "webpush"
+    created_at: datetime

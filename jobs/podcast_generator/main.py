@@ -8,6 +8,7 @@ from typing import get_args
 from shared.firestore_client import FirestoreClient
 from shared.gemini_client import GeminiClient
 from shared.models import DEFAULT_PODCAST_LANGUAGE, DifficultyLevel, Podcast, PodcastCache
+from shared.notifier import build_notifier
 from shared.storage_client import StorageClient
 from shared.utils import cache_key_for
 from jobs.podcast_generator.script_generator import ScriptGenerator
@@ -87,7 +88,12 @@ def _persist_user_podcast(
     return podcast.id
 
 
-def main() -> None:
+def main(notifier=None) -> None:
+    """Cloud Run Job エントリポイント: Podcast 生成。
+
+    Args:
+        notifier: 通知送信機（テスト時に差し替え可能）。未指定なら環境変数から構築。
+    """
     # KeyError で即座に失敗させる。os.environ.get("USER_ID", "default") のような
     # サイレントフォールバックは複数ユーザーのデータ混在バグを引き起こす。
     user_id = os.environ["USER_ID"]
@@ -107,6 +113,10 @@ def main() -> None:
     storage = StorageClient()
     script_gen = ScriptGenerator(gemini_client=gemini)
     tts_gen = TtsGenerator(gemini_client=gemini)
+
+    # notifier 未指定なら環境から構築（鍵未設定なら no-op）
+    if notifier is None:
+        notifier = build_notifier(db, os.environ)
 
     prefs = db.get_user_prefs(user_id)
 
@@ -224,6 +234,18 @@ def main() -> None:
             duration,
         )
         logger.info("Saved podcast %s for article %s", podcast_id, article_id)
+
+        # 生成完了通知（送信失敗はジョブ成功に影響しない）
+        try:
+            notifier.notify_completion(
+                user_id,
+                title="Podcast 生成完了",
+                body=f"記事のポッドキャストが生成されました（{difficulty}）",
+                # url は Service Worker の notificationclick が遷移先に使う（未指定だと "/" 固定）。
+                data={"podcast_id": podcast_id, "article_id": article_id, "url": "/feed"},
+            )
+        except Exception:
+            logger.warning("Failed to send push notification for podcast %s", podcast_id)
 
 
 if __name__ == "__main__":

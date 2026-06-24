@@ -1,6 +1,7 @@
 """Firestore CRUD helpers for all domain entities."""
 from __future__ import annotations
 
+import hashlib
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -12,6 +13,7 @@ from shared.models import (
     FeaturedSite,
     Podcast,
     PodcastCache,
+    PushSubscription,
     Recommendation,
     Session,
     User,
@@ -715,3 +717,38 @@ class FirestoreClient:
             limit
         ).stream()
         return [AuditLog(**doc.to_dict()) for doc in docs]
+
+    # ---------- Push Subscriptions ----------
+
+    def _subscription_doc_id(self, endpoint: str) -> str:
+        """endpoint の SHA-256 ハッシュを doc-id として使う（冪等 upsert）。"""
+        return hashlib.sha256(endpoint.encode()).hexdigest()
+
+    def save_push_subscription(self, sub: PushSubscription) -> None:
+        """Web Push 購読を保存する（冪等）。
+
+        同じ endpoint を複数回 save した場合、同じ doc-id で上書き（upsert）される。
+        """
+        doc_id = self._subscription_doc_id(sub.endpoint)
+        data = sub.model_dump(mode="json")
+        self._db.collection("pushSubscriptions").document(doc_id).set(data, merge=True)
+
+    def get_push_subscriptions(self, user_id: str) -> list[PushSubscription]:
+        """指定ユーザーの Web Push 購読一覧を取得する。"""
+        docs = (
+            self._db.collection("pushSubscriptions")
+            .where("user_id", "==", user_id)
+            .stream()
+        )
+        return [PushSubscription(**doc.to_dict()) for doc in docs]
+
+    def delete_push_subscription(self, user_id: str, endpoint: str) -> None:
+        """Web Push 購読を削除する（冪等・所有権検証付き）。
+
+        指定ユーザーが所有する購読のみを削除する（他ユーザーのデータを削除できない）。
+        ドキュメント不在でも例外を出さない。
+        """
+        doc_id = self._subscription_doc_id(endpoint)
+        doc = self._db.collection("pushSubscriptions").document(doc_id).get()
+        if doc.exists and doc.to_dict().get("user_id") == user_id:
+            self._db.collection("pushSubscriptions").document(doc_id).delete()
