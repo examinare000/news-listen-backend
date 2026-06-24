@@ -373,3 +373,68 @@ class TestLoginRateLimit:
             # IP ロックで即座に 429
             assert resp.status_code == 429
             assert "Retry-After" in resp.headers
+
+
+class TestAuditInstrumentation:
+    """auth ルーターが AuditLogger.record を適切に呼ぶことを検証する（計装）。"""
+
+    def test_login_success_records_audit(self, api_client, mock_db, mock_audit):
+        """ログイン成功時に login_success を記録する（C: ワークフロー統合）。"""
+        mock_db.get_user.return_value = _user(password="correct-horse")
+        api_client.post(
+            "/auth/login",
+            json={"username": "alice", "password": "correct-horse"},
+            headers=API_HEADERS,
+        )
+        mock_audit.record.assert_called_once()
+        assert mock_audit.record.call_args.kwargs["action"] == "login_success"
+
+    def test_login_failure_records_audit(self, api_client, mock_db, mock_audit):
+        """ログイン失敗時に login_failure を記録する。"""
+        mock_db.get_user.return_value = _user(password="correct-horse")
+        api_client.post(
+            "/auth/login",
+            json={"username": "alice", "password": "wrong"},
+            headers=API_HEADERS,
+        )
+        mock_audit.record.assert_called_once()
+        assert mock_audit.record.call_args.kwargs["action"] == "login_failure"
+
+    def test_logout_records_audit(self, api_client, mock_db, mock_audit):
+        """ログアウト時に logout を記録する。
+
+        セッションは削除前に読み出すこと（先に delete すると actor が取れず記録されない）を保証する。
+        """
+        mock_db.get_session.return_value = _valid_session()
+        api_client.post(
+            "/auth/logout",
+            headers={**API_HEADERS, "Authorization": "Bearer raw"},
+        )
+        mock_audit.record.assert_called_once()
+        assert mock_audit.record.call_args.kwargs["action"] == "logout"
+
+    def test_logout_reads_session_before_delete(self, api_client, mock_db, mock_audit):
+        """ログアウトはセッション削除より前に get_session を呼ぶ（use-after-delete 回帰防止）。"""
+        order: list[str] = []
+        mock_db.get_session.side_effect = lambda *a, **k: order.append("get") or _valid_session()
+        mock_db.delete_session.side_effect = lambda *a, **k: order.append("delete")
+        api_client.post(
+            "/auth/logout",
+            headers={**API_HEADERS, "Authorization": "Bearer raw"},
+        )
+        assert order == ["get", "delete"]
+
+    # ベストエフォート（record 例外でも本操作が成功する）は AuditLogger 内部の責務であり
+    # test_audit_logger.py で担保する。API 層では AuditLogger がモックに差し替わるため再検証しない。
+
+    def test_login_audit_does_not_contain_plaintext_password(
+        self, api_client, mock_db, mock_audit
+    ):
+        """record() の引数に平文パスワードが含まれない（D: 機微情報非漏洩）。"""
+        mock_db.get_user.return_value = _user(password="correct-horse")
+        api_client.post(
+            "/auth/login",
+            json={"username": "alice", "password": "correct-horse"},
+            headers=API_HEADERS,
+        )
+        assert "correct-horse" not in str(mock_audit.record.call_args)
