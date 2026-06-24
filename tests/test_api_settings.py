@@ -176,3 +176,112 @@ def test_complete_onboarding_sets_flag_true_and_persists(api_client, mock_db):
     assert saved.onboarding_completed is True
     # 他の必須フィールドが保持されている（全置換更新でも欠落しない）
     assert saved.default_difficulty == "toeic_900"
+
+
+# ---------- GET/PUT /settings/preferences ----------
+
+
+def test_get_preferences_returns_200(api_client, mock_db):
+    """GET /settings/preferences が UserPrefs の4フィールドを返す（契約検証）。"""
+    mock_db.get_user_prefs.return_value = UserPrefs(
+        user_id="user1",
+        default_difficulty="toeic_900",
+        default_playback_speed=1.5,
+        digest_enabled=True,
+        digest_article_count=7,
+    )
+
+    response = api_client.get("/settings/preferences", headers={"X-API-Key": "test-key"})
+    assert response.status_code == 200
+    data = response.json()
+    # D. 契約検証
+    assert data["default_difficulty"] == "toeic_900"
+    assert data["default_playback_speed"] == 1.5
+    assert data["digest_enabled"] is True
+    assert data["digest_article_count"] == 7
+
+
+def test_put_preferences_updates_difficulty(api_client, mock_db):
+    """PUT /settings/preferences で difficulty を更新し永続化する。"""
+    original = UserPrefs(
+        user_id="user1",
+        default_difficulty="toeic_900",
+        default_playback_speed=1.0,
+        digest_enabled=True,
+        digest_article_count=5,
+    )
+    mock_db.get_user_prefs.return_value = original
+
+    response = api_client.put(
+        "/settings/preferences",
+        json={"default_difficulty": "ielts_7"},
+        headers={"X-API-Key": "test-key"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["default_difficulty"] == "ielts_7"
+
+    # save_user_prefs が default_difficulty="ielts_7" を含む prefs で呼ばれること
+    mock_db.save_user_prefs.assert_called_once()
+    saved = mock_db.save_user_prefs.call_args[0][0]
+    assert saved.default_difficulty == "ielts_7"
+
+
+def test_put_preferences_partial_update_preserves_others(api_client, mock_db):
+    """PUT /settings/preferences で default_difficulty のみ送信、他フィールド保持。"""
+    original = UserPrefs(
+        user_id="user1",
+        default_difficulty="toeic_900",
+        default_playback_speed=1.5,
+        digest_enabled=False,
+        digest_article_count=10,
+    )
+    mock_db.get_user_prefs.return_value = original
+
+    response = api_client.put(
+        "/settings/preferences",
+        json={"default_difficulty": "eiken_p1"},
+        headers={"X-API-Key": "test-key"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    # 送信したフィールド
+    assert data["default_difficulty"] == "eiken_p1"
+    # 未送信フィールドは元値を保持
+    assert data["default_playback_speed"] == 1.5
+    assert data["digest_enabled"] is False
+    assert data["digest_article_count"] == 10
+
+    # save_user_prefs で他フィールドが保持されていることを検証
+    saved = mock_db.save_user_prefs.call_args[0][0]
+    assert saved.default_playback_speed == 1.5
+    assert saved.digest_enabled is False
+    assert saved.digest_article_count == 10
+
+
+def test_put_preferences_invalid_difficulty_returns_422(api_client, mock_db):
+    """PUT /settings/preferences で不正な difficulty → 422。"""
+    mock_db.get_user_prefs.return_value = UserPrefs(
+        user_id="user1", default_difficulty="toeic_900"
+    )
+
+    response = api_client.put(
+        "/settings/preferences",
+        json={"default_difficulty": "invalid_difficulty"},
+        headers={"X-API-Key": "test-key"},
+    )
+    assert response.status_code == 422
+
+
+def test_put_preferences_invalid_digest_count_returns_422(api_client, mock_db):
+    """PUT /settings/preferences で digest_article_count < 1 → 422。"""
+    mock_db.get_user_prefs.return_value = UserPrefs(
+        user_id="user1", default_difficulty="toeic_900"
+    )
+
+    response = api_client.put(
+        "/settings/preferences",
+        json={"digest_article_count": 0},
+        headers={"X-API-Key": "test-key"},
+    )
+    assert response.status_code == 422
