@@ -4,8 +4,11 @@ import logging
 import os
 
 from fastapi import FastAPI, HTTPException, Security, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security.api_key import APIKeyHeader
 
+from api.cors_config import build_cors_options
+from api.middleware.security_headers import SecurityHeadersMiddleware, build_security_headers
 from api.routers import admin, articles, auth, feed, podcasts, settings
 
 _logger = logging.getLogger(__name__)
@@ -13,6 +16,14 @@ _logger = logging.getLogger(__name__)
 API_KEY_HEADER = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 app = FastAPI(title="Tech News Podcast API", version="0.1.0")
+
+# CORS と セキュリティヘッダ ミドルウェアを追加。
+# ミドルウェアの追加順序は逆順で適用される（後に add されたものが外側）。
+# つまり CORSMiddleware が先に add されると、内側で動く。
+# SecurityHeadersMiddleware が後に add されると、外側で動く。
+# 結果: SecurityHeaders（外）→ CORS（内）→ ルーター
+app.add_middleware(CORSMiddleware, **build_cors_options(os.environ))
+app.add_middleware(SecurityHeadersMiddleware, headers=build_security_headers(os.environ))
 
 # API_KEY 未設定時は全リクエストが 401 になる。デプロイ設定ミスを起動時に検出できるよう警告する。
 if not os.environ.get("API_KEY"):
