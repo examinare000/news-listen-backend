@@ -62,6 +62,39 @@ def mock_audit():
 
 
 @pytest.fixture
+def podcast_generator_mocks():
+    """podcast_generator/main.py テスト用の全外部依存モック。
+
+    get_user_podcast_for_article はデフォルトで None を返す。
+    promote_user_podcast は MagicMock（デフォルト no-op）。
+    既存テストの後方互換性を保ちながら、promote フローの新テストを実行する。
+
+    注: このフィクスチャは tests/test_podcast_generator_main.py の
+    mocks フィクスチャと重複するため、別ファイルで promote 機能を
+    テストするときにのみ使用する。既存テストは現行の mocks を継続利用。
+    """
+    from unittest.mock import patch, MagicMock
+
+    with patch.dict("os.environ", {
+        "USER_ID": "user1",
+        "GCS_BUCKET_NAME": "test-bucket",
+        "GEMINI_API_KEY": "test-key",
+        "DIFFICULTY": "toeic_900",
+    }), \
+         patch("jobs.podcast_generator.main.FirestoreClient") as MockDb:
+
+        db = MockDb.return_value
+        # WHY: get_user_podcast_for_article をデフォルト None にすることで、
+        # 既存テストが promote 機能なしで従来どおり save_podcast へフォールバックする。
+        db.get_user_podcast_for_article.return_value = None
+        # WHY: promote_user_podcast は MagicMock（デフォルト no-op）。
+        # promote フローをテストするとき、各テストで return_value を上書きする。
+        db.promote_user_podcast = MagicMock()
+
+        yield db
+
+
+@pytest.fixture
 def api_client(mock_db, mock_storage, mock_job_trigger, mock_audit):
     """API_KEY と USER_ID を設定した TestClient。
 

@@ -104,6 +104,10 @@ def mocks():
 
     各テストは fixture から (db, storage, script_gen, tts_gen, main_module) を受け取り、
     必要に応じて戻り値をオーバーライドしてから main_module.main() を呼ぶ。
+
+    WHY: get_user_podcast_for_article をデフォルト None に設定することで、
+    既存テストが promote 機能なしで従来どおり save_podcast へフォールバックする。
+    promote_user_podcast は MagicMock（no-op）とし、各テストで必要に応じて検証可能にする。
     """
     from jobs.podcast_generator.script_generator import PodcastScript
 
@@ -125,6 +129,10 @@ def mocks():
         db.podcast_exists_for_article.return_value = False
         db.get_podcast_cache.return_value = None
         db.try_acquire_cache.return_value = True
+        # WHY: 既存 per-user Podcast 行を確認するため get_user_podcast_for_article をデフォルト None に。
+        # promote フロー テストで上書き可能。
+        db.get_user_podcast_for_article.return_value = None
+        # WHY: promote_user_podcast は MagicMock のまま。各テストで動作検証可能。
 
         mock_script = PodcastScript(japanese_intro="生成イントロ", english_body="English body.")
         script_gen.generate.return_value = mock_script
@@ -640,3 +648,204 @@ def test_difficulty_env_takes_precedence_over_prefs(mocks):
         saved_cache = mocks["db"].save_podcast_cache.call_args[0][0]
         assert saved_cache.difficulty == "toeic_600"
         assert "toeic_600" in saved_cache.cache_key
+
+
+# ──────────────────────────────────────────────
+# T13: dedup は completed-only（processing は非対象）
+# ──────────────────────────────────────────────
+
+
+def test_dedup_uses_completed_statuses_only(mocks):
+    """podcast_exists_for_article が statuses=("completed",) で呼ばれることで、
+    processing 行は dedup 対象外にされること。"""
+    db = mocks["db"]
+
+    mocks["main"].main()
+
+    # 1 回目の呼び出しで statuses=("completed",) が指定されていることを確認
+    db.podcast_exists_for_article.assert_called_with(
+        "user1", ARTICLE_ID, "toeic_900", statuses=("completed",)
+    )
+
+
+# ──────────────────────────────────────────────
+# T14: キャッシュヒット → 既存 processing 行を promote
+# ──────────────────────────────────────────────
+
+
+def test_cache_hit_promotes_existing_processing_row(mocks):
+    """キャッシュヒット completed 時、既存の processing 行があれば promote_user_podcast で
+    completed へ遷移させ、save_podcast は呼ばないこと。"""
+    from shared.models import Podcast
+
+    db = mocks["db"]
+
+    # 既存の processing Podcast
+    existing_pod = Podcast(
+        id="pod-existing",
+        type="single",
+        article_ids=[ARTICLE_ID],
+        difficulty="toeic_900",
+        audio_url="",
+        japanese_intro_text="",
+        duration_seconds=0,
+        status="processing",
+        created_at=NOW,
+        user_id="user1",
+    )
+
+    db.get_user_podcast_for_article.return_value = existing_pod
+    db.get_podcast_cache.return_value = _make_completed_cache()
+
+    mocks["main"].main()
+
+    # promote_user_podcast が (pod-existing, "completed", ...) で呼ばれること
+    db.promote_user_podcast.assert_called_once()
+    promote_call = db.promote_user_podcast.call_args
+    assert promote_call[0][0] == "pod-existing"  # podcast_id
+    assert promote_call[0][1] == "completed"  # status
+    assert promote_call[1]["audio_url"] == AUDIO_BLOB
+    assert promote_call[1]["japanese_intro_text"] == "キャッシュイントロ"
+    assert promote_call[1]["duration_seconds"] == 120
+
+    # save_podcast は呼ばれないこと
+    db.save_podcast.assert_not_called()
+
+
+def test_cache_hit_no_existing_row_falls_back_to_save_podcast(mocks):
+    """キャッシュヒット completed 時、既存行がなければ save_podcast で新規作成（後方互換）。"""
+    db = mocks["db"]
+
+    db.get_user_podcast_for_article.return_value = None  # 既存行なし
+    db.get_podcast_cache.return_value = _make_completed_cache()
+
+    mocks["main"].main()
+
+    # promote_user_podcast は呼ばれないこと
+    db.promote_user_podcast.assert_not_called()
+
+    # save_podcast が呼ばれること
+    db.save_podcast.assert_called_once()
+
+
+# ──────────────────────────────────────────────
+# T15: キャッシュミス・生成成功 → 既存行を promote
+# ──────────────────────────────────────────────
+
+
+def test_cache_miss_generation_success_promotes_to_completed(mocks):
+    """キャッシュミス・生成成功時、既存の processing 行があれば promote_user_podcast で
+    completed へ遷移させること。"""
+    from shared.models import Podcast
+
+    db = mocks["db"]
+
+    existing_pod = Podcast(
+        id="pod-existing",
+        type="single",
+        article_ids=[ARTICLE_ID],
+        difficulty="toeic_900",
+        audio_url="",
+        japanese_intro_text="",
+        duration_seconds=0,
+        status="processing",
+        created_at=NOW,
+        user_id="user1",
+    )
+
+    db.get_user_podcast_for_article.return_value = existing_pod
+    db.get_podcast_cache.return_value = None  # キャッシュミス
+    db.try_acquire_cache.return_value = True
+
+    mocks["main"].main()
+
+    # promote_user_podcast が (pod-existing, "completed", ...) で呼ばれること
+    db.promote_user_podcast.assert_called_once()
+    promote_call = db.promote_user_podcast.call_args
+    assert promote_call[0][0] == "pod-existing"
+    assert promote_call[0][1] == "completed"
+    assert promote_call[1]["audio_url"] == AUDIO_BLOB
+
+    # save_podcast は呼ばれないこと（promote だけで完了）
+    db.save_podcast.assert_not_called()
+
+
+def test_cache_miss_no_existing_row_falls_back_to_save_podcast(mocks):
+    """キャッシュミス・生成成功時、既存行がなければ save_podcast で新規作成（後方互換）。"""
+    db = mocks["db"]
+
+    db.get_user_podcast_for_article.return_value = None
+    db.get_podcast_cache.return_value = None
+    db.try_acquire_cache.return_value = True
+
+    mocks["main"].main()
+
+    # promote_user_podcast は呼ばれないこと
+    db.promote_user_podcast.assert_not_called()
+
+    # save_podcast が呼ばれること
+    db.save_podcast.assert_called_once()
+
+
+# ──────────────────────────────────────────────
+# T16: 生成失敗 → 既存 processing 行を failed へ promote
+# ──────────────────────────────────────────────
+
+
+def test_generation_exception_promotes_existing_row_to_failed(mocks):
+    """生成中に例外が発生し、既存の processing 行があれば、
+    promote_user_podcast で failed へ遷移させること。"""
+    from shared.models import Podcast
+
+    db = mocks["db"]
+
+    existing_pod = Podcast(
+        id="pod-existing",
+        type="single",
+        article_ids=[ARTICLE_ID],
+        difficulty="toeic_900",
+        audio_url="",
+        japanese_intro_text="",
+        duration_seconds=0,
+        status="processing",
+        created_at=NOW,
+        user_id="user1",
+    )
+
+    db.get_user_podcast_for_article.return_value = existing_pod
+    db.get_podcast_cache.return_value = None
+    db.try_acquire_cache.return_value = True
+    mocks["script_gen"].generate.side_effect = Exception("Gemini API error")
+
+    mocks["main"].main()
+
+    # promote_user_podcast が (pod-existing, "failed", error_message=...) で呼ばれること
+    db.promote_user_podcast.assert_called_once()
+    promote_call = db.promote_user_podcast.call_args
+    assert promote_call[0][0] == "pod-existing"
+    assert promote_call[0][1] == "failed"
+    assert "error_message" in promote_call[1]
+    assert "Gemini API error" in promote_call[1]["error_message"]
+
+    # save_podcast_cache (failed) も呼ばれること
+    db.save_podcast_cache.assert_called_once()
+    saved_cache = db.save_podcast_cache.call_args[0][0]
+    assert saved_cache.status == "failed"
+
+
+def test_generation_exception_no_existing_row_no_promote(mocks):
+    """生成失敗時、既存 processing 行がなければ promote は呼ばない（既存動作を維持）。"""
+    db = mocks["db"]
+
+    db.get_user_podcast_for_article.return_value = None
+    db.get_podcast_cache.return_value = None
+    db.try_acquire_cache.return_value = True
+    mocks["script_gen"].generate.side_effect = Exception("Gemini API error")
+
+    mocks["main"].main()
+
+    # promote_user_podcast は呼ばれないこと
+    db.promote_user_podcast.assert_not_called()
+
+    # save_podcast_cache (failed) は呼ばれること
+    db.save_podcast_cache.assert_called_once()
