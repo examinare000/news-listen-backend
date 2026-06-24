@@ -5,11 +5,12 @@ from api.dependencies import get_firestore_client, get_job_trigger, get_user_id
 from api.ratelimit import rate_limit
 from api.schemas import ActionResponse
 from shared.firestore_client import FirestoreClient
+from shared.models import DEFAULT_PODCAST_LANGUAGE
 
 router = APIRouter()
 
 
-@router.post("/articles/{article_id}/star", response_model=ActionResponse)
+@router.post("/articles/{article_id}/star", status_code=202, response_model=ActionResponse)
 def star_article(
     article_id: str,
     background_tasks: BackgroundTasks,
@@ -23,13 +24,20 @@ def star_article(
 
     db.add_starred_article(user_id, article_id)
 
+    # 202=PRD §7 受理（生成は非同期）。star 受付時に processing 行を原子的に確保し
+    # 「生成中」をクライアントへ可視化する。難易度は prefs.default_difficulty
+    # （generator と一致させ重複行を防ぐ）。
+    prefs = db.get_user_prefs(user_id)
+    difficulty = prefs.default_difficulty
+    db.try_acquire_user_podcast(user_id, article_id, difficulty, DEFAULT_PODCAST_LANGUAGE)
+
     # スターは正のシグナル: レコメンド再計算と当該記事の Podcast 生成を自動起動する。
     # 重い処理（TTS で数分）はジョブ側コンテナで非同期実行されるため、ここでは起動だけを
     # レスポンス送出後の BackgroundTask に委ね、ユーザー操作の応答性を保つ。
     background_tasks.add_task(job_trigger.trigger, "recommendation", user_id)
     background_tasks.add_task(job_trigger.trigger, "podcast-generator", user_id)
 
-    return ActionResponse(status="starred", article_id=article_id)
+    return ActionResponse(status="processing", article_id=article_id)
 
 
 @router.post("/articles/{article_id}/dismiss", response_model=ActionResponse)
