@@ -155,6 +155,32 @@ class TestLogin:
         assert resp.status_code == 200
         assert resp.json()["token"]
 
+    def test_login_sets_csrf_cookie(self, api_client, mock_db):
+        """ログイン成功時に csrf_token cookie が設定されること。
+
+        WHY: double-submit cookie 方式で CSRF 防御するため、
+        セッション同期でクライアント側に csrf_token を配布する。
+        """
+        mock_db.get_user.return_value = _user(password="correct-horse")
+        resp = api_client.post(
+            "/auth/login",
+            json={"username": "alice", "password": "correct-horse"},
+            headers=API_HEADERS,
+        )
+        assert resp.status_code == 200
+        # resp.cookies は TestClient がパースした結果
+        assert "csrf_token" in resp.cookies
+        # Set-Cookie ヘッダを全て走査して httponly でないことを確認
+        all_cookies = [v for k, v in resp.headers.items() if k.lower() == "set-cookie"]
+        csrf_cookies = [c for c in all_cookies if "csrf_token=" in c]
+        assert csrf_cookies, "csrf_token cookie が設定されていない"
+        csrf_cookie_str = csrf_cookies[0]
+        # httponly フラグなし（大文字小文字不問）
+        cookie_attrs = csrf_cookie_str.lower()
+        assert "httponly" not in cookie_attrs.split("csrf_token=", 1)[1]
+        # SameSite=lax
+        assert "samesite=lax" in cookie_attrs
+
 
 class TestMe:
     def test_returns_current_user(self, api_client, mock_db):
@@ -169,6 +195,37 @@ class TestMe:
     def test_requires_auth(self, api_client, mock_db):
         resp = api_client.get("/auth/me", headers=API_HEADERS)
         assert resp.status_code == 401
+
+    def test_me_sets_csrf_cookie_when_missing(self, api_client, mock_db):
+        """csrf_token cookie がない状態で /auth/me を叩くと csrf_token が付与される。
+
+        WHY: ログインし直さない既存セッションも CSRF 保護を受けるための補填。
+        """
+        mock_db.get_session.return_value = _valid_session()
+        mock_db.get_user.return_value = _user()
+        resp = api_client.get(
+            "/auth/me", headers={**API_HEADERS, "Authorization": "Bearer raw"}
+        )
+        assert resp.status_code == 200
+        assert "csrf_token" in resp.cookies
+
+    def test_me_does_not_overwrite_existing_csrf_cookie(self, api_client, mock_db):
+        """csrf_token cookie が既にある場合、/auth/me で上書きしない。
+
+        WHY: 不必要なトークン再生成はサーバーとクライアントの不一致を引き起こす。
+        """
+        mock_db.get_session.return_value = _valid_session()
+        mock_db.get_user.return_value = _user()
+        # api_client.cookies に csrf_token をセット
+        api_client.cookies.set("csrf_token", "existing-token")
+        resp = api_client.get(
+            "/auth/me", headers={**API_HEADERS, "Authorization": "Bearer raw"}
+        )
+        assert resp.status_code == 200
+        # 新しい csrf_token cookie が Set-Cookie に出ていない（上書きしない）
+        all_cookies = [v for k, v in resp.headers.items() if k.lower() == "set-cookie"]
+        csrf_set = [c for c in all_cookies if "csrf_token=" in c]
+        assert not csrf_set, "既存 csrf_token cookie を上書きしてはならない"
 
 
 class TestLogout:
