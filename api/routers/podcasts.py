@@ -24,8 +24,9 @@ def list_podcasts(
         podcasts=[
             # Firestore には GCS blob path が保存されている。
             # iOS クライアントが直接再生できる署名付き URL（有効期限 1 時間）に変換して返す。
+            # processing 行は audio_url 未確定（空）のため署名 URL 変換をスキップ（空 blob 署名の無駄/失敗を防ぐ）。
             PodcastResponse.from_podcast(
-                p, audio_url=storage.generate_audio_url(p.audio_url)
+                p, audio_url=storage.generate_audio_url(p.audio_url) if p.audio_url else ""
             )
             for p in podcasts
         ]
@@ -43,8 +44,9 @@ def get_podcast(
     podcast = db.get_podcast(podcast_id)
     if not podcast or podcast.user_id != user_id:
         raise HTTPException(status_code=404, detail="Podcast not found")
+    # processing 行は audio_url 未確定（空）のため署名 URL 変換をスキップ（空 blob 署名の無駄/失敗を防ぐ）。
     return PodcastResponse.from_podcast(
-        podcast, audio_url=storage.generate_audio_url(podcast.audio_url)
+        podcast, audio_url=storage.generate_audio_url(podcast.audio_url) if podcast.audio_url else ""
     )
 
 
@@ -70,6 +72,7 @@ def patch_playback_position(
     updated = podcast.model_copy(update={"playback_position_seconds": clamped})
     db.save_podcast(updated)
 
+    # processing 行は audio_url 未確定（空）のため署名 URL 変換をスキップ（空 blob 署名の無駄/失敗を防ぐ）。
     return PodcastResponse.from_podcast(
-        updated, audio_url=storage.generate_audio_url(updated.audio_url)
+        updated, audio_url=storage.generate_audio_url(updated.audio_url) if updated.audio_url else ""
     )

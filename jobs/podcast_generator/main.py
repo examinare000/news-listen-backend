@@ -54,6 +54,39 @@ def _build_user_podcast(
     )
 
 
+def _persist_user_podcast(
+    db: FirestoreClient,
+    user_id: str,
+    article_id: str,
+    difficulty: str,
+    audio_url: str,
+    japanese_intro_text: str,
+    duration_seconds: int,
+) -> str:
+    """star 経由で作られた processing 行があれば promote、無ければ新規 save（後方互換）。
+
+    WHY: star 起点の processing 行を重複させず同一 id で completed へ昇格。
+    star 非経由トリガーは従来どおり新規保存（後方互換）。
+    永続化した Podcast の id を返す（ログでの追跡用）。
+    """
+    existing = db.get_user_podcast_for_article(user_id, article_id, difficulty)
+    if existing is not None:
+        db.promote_user_podcast(
+            existing.id,
+            "completed",
+            audio_url=audio_url,
+            japanese_intro_text=japanese_intro_text,
+            duration_seconds=duration_seconds,
+        )
+        return existing.id
+    podcast = _build_user_podcast(
+        user_id, article_id, difficulty,
+        audio_url, japanese_intro_text, duration_seconds,
+    )
+    db.save_podcast(podcast)
+    return podcast.id
+
+
 def main() -> None:
     # KeyError で即座に失敗させる。os.environ.get("USER_ID", "default") のような
     # サイレントフォールバックは複数ユーザーのデータ混在バグを引き起こす。
@@ -92,8 +125,9 @@ def main() -> None:
 
     for article_id in prefs.starred_article_ids:
         # (a) per-user 冪等チェック: ユーザーが既に当該 Podcast を保有していればスキップ。
+        # processing 行は dedup 対象外（star が作った processing 行があっても生成を続行し promote する）。
         # キャッシュ参照より前段に置き、不要な Firestore ラウンドトリップを防ぐ。
-        if db.podcast_exists_for_article(user_id, article_id, difficulty):
+        if db.podcast_exists_for_article(user_id, article_id, difficulty, statuses=("completed",)):
             logger.info("Podcast already exists for article %s, skipping", article_id)
             continue
 
@@ -107,7 +141,8 @@ def main() -> None:
 
         # (b) キャッシュヒット (completed): Gemini/TTS を呼ばず共有成果物を参照する per-user Podcast を作成。
         if cache is not None and cache.status == "completed":
-            podcast = _build_user_podcast(
+            _persist_user_podcast(
+                db,
                 user_id,
                 article_id,
                 difficulty,
@@ -115,7 +150,6 @@ def main() -> None:
                 cache.japanese_intro_text,
                 cache.duration_seconds,
             )
-            db.save_podcast(podcast)
             logger.info("Cache hit: saved podcast for article %s from shared cache", article_id)
             continue
 
@@ -157,6 +191,11 @@ def main() -> None:
                 created_at=datetime.now(timezone.utc),
             )
             db.save_podcast_cache(failed_cache)
+            # 生成失敗時は per-user processing 行を failed へ遷移させ stuck を防ぐ。
+            # promote は processing のときだけ書くので後発 completed を踏み潰さない。
+            existing = db.get_user_podcast_for_article(user_id, article_id, difficulty)
+            if existing is not None:
+                db.promote_user_podcast(existing.id, "failed", error_message=str(e))
             continue
 
         # 生成成功 → 永続化（生成フェーズの failed リカバリ対象外）
@@ -175,7 +214,8 @@ def main() -> None:
         )
         db.save_podcast_cache(completed_cache)
 
-        podcast = _build_user_podcast(
+        podcast_id = _persist_user_podcast(
+            db,
             user_id,
             article_id,
             difficulty,
@@ -183,8 +223,7 @@ def main() -> None:
             script.japanese_intro,
             duration,
         )
-        db.save_podcast(podcast)
-        logger.info("Saved podcast %s for article %s", podcast.id, article_id)
+        logger.info("Saved podcast %s for article %s", podcast_id, article_id)
 
 
 if __name__ == "__main__":

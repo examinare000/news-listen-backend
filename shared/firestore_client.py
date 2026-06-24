@@ -1,6 +1,7 @@
 """Firestore CRUD helpers for all domain entities."""
 from __future__ import annotations
 
+import uuid
 from datetime import datetime, timedelta, timezone
 
 from google.cloud import firestore
@@ -214,6 +215,45 @@ class FirestoreClient:
             return None
         return Podcast(**{**doc.to_dict(), "id": doc.id})
 
+    def _user_single_podcast_query(
+        self, user_id: str, article_id: str, difficulty: str
+    ):
+        """(user_id, article_id, difficulty, type='single') を引く per-user Podcast 共通クエリ。
+
+        WHY: get_user_podcast_for_article / podcast_exists_for_article /
+        try_acquire_user_podcast が同一の where 連鎖を持つため一元化し、
+        スキーマ変更時に一部だけ更新し損なう不整合（status フィルタ漏れ等）を防ぐ。
+        呼び出し元が status フィルタ・limit・stream（transaction 含む）を付与する。
+        """
+        return (
+            self._db.collection("podcasts")
+            .where("user_id", "==", user_id)
+            .where("article_ids", "array_contains", article_id)
+            .where("difficulty", "==", difficulty)
+            .where("type", "==", "single")
+        )
+
+    def get_user_podcast_for_article(
+        self, user_id: str, article_id: str, difficulty: str
+    ) -> Podcast | None:
+        """(user_id, article_id, difficulty, type='single') の per-user Podcast を返す。
+
+        status 不問（processing・completed・failed いずれでも返す）。
+        id は doc.id から復元される。
+
+        WHY: 生成中の processing 行を確認したり、既に存在する per-user Podcast を
+        取得するため、status フィルタを入れない。呼び出し元で必要に応じてフィルタ。
+        """
+        docs = list(
+            self._user_single_podcast_query(user_id, article_id, difficulty)
+            .limit(1)
+            .stream()
+        )
+        if not docs:
+            return None
+        doc = docs[0]
+        return Podcast(**{**doc.to_dict(), "id": doc.id})
+
     def get_podcasts_for_user(self, user_id: str, limit: int = 50) -> list[Podcast]:
         docs = (
             self._db.collection("podcasts")
@@ -225,14 +265,15 @@ class FirestoreClient:
         return [Podcast(**{**doc.to_dict(), "id": doc.id}) for doc in docs]
 
     def podcast_exists_for_article(
-        self, user_id: str, article_id: str, difficulty: str
+        self, user_id: str, article_id: str, difficulty: str,
+        statuses: tuple[str, ...] = ("completed",)
     ) -> bool:
+        # WHY: statuses デフォルトを "completed" のみにして、processing 状態のポッドキャストを
+        # 未存在扱いにする。これにより生成器が「既存 processing 行があっても」次の生成を開始できる
+        # （per-user 単位で同時実行可能）。呼び出し元で異なる statuses が必要な場合は明示的に指定。
         docs = list(
-            self._db.collection("podcasts")
-            .where("user_id", "==", user_id)
-            .where("article_ids", "array_contains", article_id)
-            .where("difficulty", "==", difficulty)
-            .where("type", "==", "single")
+            self._user_single_podcast_query(user_id, article_id, difficulty)
+            .where("status", "in", statuses)
             .limit(1)
             .stream()
         )
@@ -260,6 +301,63 @@ class FirestoreClient:
         data = cache.model_dump(mode="json")
         data.pop("cache_key")
         self._db.collection("podcastCache").document(cache.cache_key).set(data)
+
+    def try_acquire_user_podcast(
+        self, user_id: str, article_id: str, difficulty: str, language: str
+    ) -> str | None:
+        """per-user Podcast の processing 確保をトランザクションで原子的に行う。
+
+        (user_id, article_id, difficulty, type='single') タプルに対して、
+        処理中の Podcast 行が無ければ新規作成して id を返す。
+        既存行があれば None を返す（冪等・レース防御）。
+
+        WHY: 複数の star リクエストが同時に同じ記事を処理するレースを防ぐため、
+        per-user 単位で 1 回だけ processing 行を作成する。返された id で
+        その後の生成を進める。None が返ったなら既に誰かが開始済みなので、
+        呼び出し元は処理をスキップする。
+
+        Returns:
+            生成権を取得した場合は新規 id、既に存在すれば None。
+        """
+        podcast_id = str(uuid.uuid4())
+        ref = self._db.collection("podcasts").document(podcast_id)
+        now = datetime.now(timezone.utc)
+
+        @firestore.transactional
+        def _acquire(transaction) -> str | None:
+            # 同じ (user_id, article_id, difficulty, type='single') の行が既にあるか確認。
+            # WHY: stream(transaction=transaction) で読み取りをトランザクションに束縛する。
+            # これを怠ると（try_acquire_cache の ref.get(transaction=...) と異なり）読み取りが
+            # トランザクション外となり、2 つの star が同時に「不在」を見て二重行を作るレースを許す。
+            existing_docs = list(
+                self._user_single_podcast_query(user_id, article_id, difficulty)
+                .limit(1)
+                .stream(transaction=transaction)
+            )
+            if existing_docs:
+                # 既存行がある → 誰かが既に確保した
+                return None
+
+            # 不在 → processing 行を作成
+            transaction.set(
+                ref,
+                {
+                    "type": "single",
+                    "article_ids": [article_id],
+                    "difficulty": difficulty,
+                    "audio_url": "",
+                    "japanese_intro_text": "",
+                    "duration_seconds": 0,
+                    "status": "processing",
+                    "error_message": None,
+                    "playback_position_seconds": 0.0,
+                    "created_at": now,
+                    "user_id": user_id,
+                },
+            )
+            return podcast_id
+
+        return _acquire(self._db.transaction())
 
     def try_acquire_cache(
         self,
@@ -300,6 +398,60 @@ class FirestoreClient:
             return True
 
         return _acquire(self._db.transaction())
+
+    def promote_user_podcast(
+        self,
+        podcast_id: str,
+        status: str,
+        audio_url: str = "",
+        japanese_intro_text: str = "",
+        duration_seconds: int = 0,
+        error_message: str | None = None,
+    ) -> None:
+        """processing 状態の per-user Podcast をステータス遷移させる（冪等）。
+
+        podcast_id の現在の status を確認し、processing のときだけ
+        新しいステータスと付随データ（audio_url など）に update する。
+        既に completed / failed なら no-op（レース防御）。
+
+        WHY: 生成完了後のステータス遷移時に、別リクエストが既に更新済みの場合に
+        重複上書きを防ぐ。トランザクション内で processing 確認 → 条件付き update。
+
+        Args:
+            podcast_id: 遷移対象の Podcast id
+            status: 遷移先ステータス（"completed" / "failed" など）
+            audio_url: 完了時の音声 URL
+            japanese_intro_text: 完了時のイントロテキスト
+            duration_seconds: 完了時の音声長
+            error_message: 失敗時のエラーメッセージ
+        """
+        ref = self._db.collection("podcasts").document(podcast_id)
+
+        @firestore.transactional
+        def _promote(transaction) -> None:
+            snapshot = ref.get(transaction=transaction)
+            if not snapshot.exists:
+                # ドキュメント不在 → no-op
+                return
+
+            current_status = snapshot.to_dict().get("status")
+            # processing のときだけ遷移を許可。既に completed/failed なら no-op。
+            if current_status != "processing":
+                return
+
+            # processing → 新ステータスへ更新
+            update_data = {
+                "status": status,
+                "audio_url": audio_url,
+                "japanese_intro_text": japanese_intro_text,
+                "duration_seconds": duration_seconds,
+            }
+            if error_message is not None:
+                update_data["error_message"] = error_message
+
+            transaction.update(ref, update_data)
+
+        _promote(self._db.transaction())
 
     # ---------- Job locks (debounce) ----------
 

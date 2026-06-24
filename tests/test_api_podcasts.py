@@ -238,3 +238,64 @@ def test_podcast_response_exposes_playback_position(api_client, mock_db, mock_st
     assert "playback_position_seconds" in data
     # デフォルト値 0.0 が float として返ること（後方互換フィールドの契約）
     assert isinstance(data["playback_position_seconds"], float)
+
+
+def test_list_podcasts_does_not_sign_url_for_processing_row(api_client, mock_db, mock_storage):
+    """processing 状態の Podcast に対して storage.generate_audio_url が呼ばれないこと。
+
+    processing 行は audio_url 未確定（空）のため署名 URL 変換をスキップ（空 blob 署名の無駄/失敗を防ぐ）。
+    レスポンスの audio_url は空文字列で返り、クライアントは status で出し分ける。
+    """
+    processing_podcast = Podcast(
+        id="pod_processing",
+        type="single",
+        article_ids=["art1"],
+        difficulty="toeic_900",
+        audio_url="",  # 未確定
+        japanese_intro_text="",
+        duration_seconds=0,
+        status="processing",
+        playback_position_seconds=0.0,
+        created_at=datetime(2026, 5, 31, tzinfo=timezone.utc),
+        user_id="user1",
+    )
+    mock_db.get_podcasts_for_user.return_value = [processing_podcast]
+
+    response = api_client.get("/podcasts", headers={"X-API-Key": "test-key"})
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["podcasts"]) == 1
+    assert data["podcasts"][0]["audio_url"] == ""
+    assert data["podcasts"][0]["status"] == "processing"
+    # generate_audio_url が呼ばれていないこと
+    mock_storage.generate_audio_url.assert_not_called()
+
+
+def test_get_podcast_does_not_sign_url_for_processing_row(api_client, mock_db, mock_storage):
+    """get_podcast(id) で processing 状態の Podcast を取得した際、generate_audio_url が呼ばれないこと。
+
+    processing 行は audio_url 未確定（空）のため署名 URL 変換をスキップ。
+    レスポンスの audio_url は空文字列、status は "processing"。
+    """
+    processing_podcast = Podcast(
+        id="pod_processing",
+        type="single",
+        article_ids=["art1"],
+        difficulty="toeic_900",
+        audio_url="",
+        japanese_intro_text="",
+        duration_seconds=0,
+        status="processing",
+        playback_position_seconds=0.0,
+        created_at=datetime(2026, 5, 31, tzinfo=timezone.utc),
+        user_id="user1",
+    )
+    mock_db.get_podcast.return_value = processing_podcast
+
+    response = api_client.get("/podcasts/pod_processing", headers={"X-API-Key": "test-key"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["audio_url"] == ""
+    assert data["status"] == "processing"
+    # generate_audio_url が呼ばれていないこと
+    mock_storage.generate_audio_url.assert_not_called()
