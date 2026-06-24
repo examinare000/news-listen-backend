@@ -6,8 +6,10 @@ from api.schemas import (
     FeaturedSiteResponse,
     FeaturedSitesResponse,
     OnboardingStatusResponse,
+    PreferencesResponse,
     RssSourceRequest,
     RssSourcesResponse,
+    UpdatePreferencesRequest,
 )
 from shared.firestore_client import FirestoreClient
 from shared.models import RssSource
@@ -110,3 +112,40 @@ def complete_onboarding(
     updated = prefs.model_copy(update={"onboarding_completed": True})
     db.save_user_prefs(updated)
     return OnboardingStatusResponse(onboarding_completed=updated.onboarding_completed)
+
+
+@router.get("/settings/preferences", response_model=PreferencesResponse)
+def get_preferences(
+    user_id: str = Depends(get_user_id),
+    db: FirestoreClient = Depends(get_firestore_client),
+):
+    """ユーザープリファレンス（デフォルト難易度・再生速度・ダイジェスト設定）を取得。"""
+    prefs = db.get_user_prefs(user_id)
+    return PreferencesResponse(
+        default_difficulty=prefs.default_difficulty,
+        default_playback_speed=prefs.default_playback_speed,
+        digest_enabled=prefs.digest_enabled,
+        digest_article_count=prefs.digest_article_count,
+    )
+
+
+@router.put("/settings/preferences", response_model=PreferencesResponse)
+def update_preferences(
+    request: UpdatePreferencesRequest,
+    user_id: str = Depends(get_user_id),
+    db: FirestoreClient = Depends(get_firestore_client),
+):
+    """ユーザープリファレンスを部分更新。指定フィールドのみ変更（他は保持）。
+
+    exclude_none=True で None フィールドをフィルタリングし、model_copy の update=
+    に渡す（add_source / complete_onboarding と同じ全置換更新パターン）。
+    """
+    prefs = db.get_user_prefs(user_id)
+    updated = prefs.model_copy(update=request.model_dump(exclude_none=True))
+    db.save_user_prefs(updated)
+    return PreferencesResponse(
+        default_difficulty=updated.default_difficulty,
+        default_playback_speed=updated.default_playback_speed,
+        digest_enabled=updated.digest_enabled,
+        digest_article_count=updated.digest_article_count,
+    )
