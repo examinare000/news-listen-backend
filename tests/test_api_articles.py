@@ -1,22 +1,50 @@
 """POST /articles/{id}/star, /articles/{id}/dismiss のテスト。"""
 from unittest.mock import patch
 
+from shared.models import DEFAULT_PODCAST_LANGUAGE
 
-def test_star_article_returns_200_when_article_exists(api_client, mock_db):
+
+def test_star_article_returns_202_when_article_exists(api_client, mock_db):
     mock_db.article_exists.return_value = True
+    mock_db.get_user_prefs.return_value.default_difficulty = "toeic_900"
+    mock_db.try_acquire_user_podcast.return_value = "podcast-uuid-123"
 
     response = api_client.post(
         "/articles/abc123/star",
         headers={"X-API-Key": "test-key"},
     )
-    assert response.status_code == 200
-    assert response.json()["status"] == "starred"
+    assert response.status_code == 202
+    assert response.json()["status"] == "processing"
     mock_db.add_starred_article.assert_called_once_with("user1", "abc123")
+
+
+def test_star_article_creates_processing_podcast_row(api_client, mock_db):
+    """star 受付時に processing 行を原子的に確保し、クライアントに「生成中」を可視化する。
+
+    難易度は prefs.default_difficulty（generator と一致させ重複行を防ぐ）。
+    """
+    mock_db.article_exists.return_value = True
+    mock_db.get_user_prefs.return_value.default_difficulty = "toeic_900"
+    mock_db.try_acquire_user_podcast.return_value = "podcast-uuid-123"
+
+    response = api_client.post(
+        "/articles/abc123/star",
+        headers={"X-API-Key": "test-key"},
+    )
+
+    assert response.status_code == 202
+    assert response.json()["status"] == "processing"
+    # try_acquire_user_podcast が user_id, article_id, difficulty, language で呼ばれたことを確認
+    mock_db.try_acquire_user_podcast.assert_called_once_with(
+        "user1", "abc123", "toeic_900", DEFAULT_PODCAST_LANGUAGE
+    )
 
 
 def test_star_article_triggers_recommendation_and_podcast(api_client, mock_db, mock_job_trigger):
     """スターは正のシグナル: recommendation 再計算と podcast 生成を起動する。"""
     mock_db.article_exists.return_value = True
+    mock_db.get_user_prefs.return_value.default_difficulty = "toeic_900"
+    mock_db.try_acquire_user_podcast.return_value = "podcast-uuid-123"
 
     api_client.post("/articles/abc123/star", headers={"X-API-Key": "test-key"})
 
@@ -30,8 +58,9 @@ def test_star_article_does_not_trigger_jobs_when_article_missing(api_client, moc
     """記事が存在しない(404)場合はジョブを起動しない。"""
     mock_db.article_exists.return_value = False
 
-    api_client.post("/articles/missing/star", headers={"X-API-Key": "test-key"})
+    response = api_client.post("/articles/missing/star", headers={"X-API-Key": "test-key"})
 
+    assert response.status_code == 404
     mock_job_trigger.trigger.assert_not_called()
 
 
@@ -117,6 +146,8 @@ def test_star_within_limit_triggers_jobs(api_client, mock_db, mock_job_trigger):
     """star が制限内（consume_rate_limit=(True,0)）でジョブを起動する。"""
     mock_db.article_exists.return_value = True
     mock_db.consume_rate_limit.return_value = (True, 0)
+    mock_db.get_user_prefs.return_value.default_difficulty = "toeic_900"
+    mock_db.try_acquire_user_podcast.return_value = "podcast-uuid-123"
 
     with patch.dict("os.environ", {"STAR_RATELIMIT_MAX_REQUESTS": "10"}):
         import importlib
@@ -149,7 +180,7 @@ def test_star_within_limit_triggers_jobs(api_client, mock_db, mock_job_trigger):
 
         m.app.dependency_overrides.clear()
 
-    assert response.status_code == 200
+    assert response.status_code == 202
     # ジョブが起動されている（recommendation と podcast-generator）
     assert mock_job_trigger.trigger.call_count >= 2
 
