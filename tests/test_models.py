@@ -117,6 +117,28 @@ class TestUserPrefs:
         with pytest.raises(ValidationError):
             UserPrefs(default_difficulty="toeic_900")
 
+    def test_read_article_ids_default_empty_list(self):
+        """read_article_ids はデフォルト空リスト（後方互換）。"""
+        prefs = UserPrefs(user_id="user1", default_difficulty="toeic_900")
+        assert prefs.read_article_ids == []
+        assert isinstance(prefs.read_article_ids, list)
+
+    def test_read_article_ids_can_be_set(self):
+        """read_article_ids に値を設定できる（dismissed_article_ids と同形）。"""
+        prefs = UserPrefs(
+            user_id="user1",
+            default_difficulty="toeic_900",
+            read_article_ids=["art1", "art2"],
+        )
+        assert prefs.read_article_ids == ["art1", "art2"]
+
+    def test_backward_compat_read_article_ids_in_model_dump(self):
+        """既存 Firestore ドキュメント（read_article_ids なし）も後方互換。"""
+        prefs = UserPrefs(user_id="user1", default_difficulty="toeic_900")
+        data = prefs.model_dump()
+        assert "read_article_ids" in data
+        assert data["read_article_ids"] == []
+
 
 class TestRecommendedArticle:
     def test_valid_creation(self):
