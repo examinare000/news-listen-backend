@@ -1,12 +1,16 @@
 """Cloud Storage upload/download helpers."""
 from __future__ import annotations
 
+import logging
 import os
 from datetime import timedelta
 
 from google.auth import default as google_auth_default
 from google.auth.transport.requests import Request as AuthRequest
 from google.cloud import storage
+from google.cloud.exceptions import NotFound
+
+logger = logging.getLogger(__name__)
 
 
 class StorageClient:
@@ -75,4 +79,50 @@ class StorageClient:
             service_account_email=service_account_email,
             access_token=token,
         )
+
+    def get_blob_size(self, blob_name: str) -> int:
+        """GCS blob のサイズ（バイト）を取得する。不在・エラー時は 0 を返す（read 安全）。
+
+        Args:
+            blob_name: GCS blob パス。空文字の場合は GCS を叩かず 0 を返す。
+
+        Returns:
+            blob のサイズ（バイト）。blob 不在・エラー時は 0。
+        """
+        if not blob_name:
+            return 0
+
+        bucket = self._client.bucket(self._bucket_name)
+        blob = bucket.blob(blob_name)
+        try:
+            blob.reload()
+            return blob.size if blob.size is not None else 0
+        except NotFound:
+            return 0
+        except Exception as e:
+            # その他のエラー（権限不足など）も 0 を返す（best-effort）。
+            # サイレント 0 で使用量が過小報告されうるため warning で可観測化する。
+            logger.warning("get_blob_size failed for %s: %s", blob_name, e)
+            return 0
+
+    def delete_blob(self, blob_name: str) -> bool:
+        """GCS blob を削除する。冪等・不在でも例外を上げない。
+
+        Returns:
+            実際に削除できたら True、不在・失敗（権限不足など）なら False。
+            呼び出し側は戻り値で「解放できたか」を正直に集計できる（best-effort）。
+        """
+        try:
+            bucket = self._client.bucket(self._bucket_name)
+            blob = bucket.blob(blob_name)
+            blob.delete()
+            return True
+        except NotFound:
+            # blob が存在しない → 既に削除されている → 解放はしていない
+            return False
+        except Exception as e:
+            # その他のエラー（権限不足など）は握り潰すが（best-effort・処理継続）、
+            # 削除失敗を成功と誤認しないよう False を返し warning で可観測化する。
+            logger.warning("delete_blob failed for %s: %s", blob_name, e)
+            return False
 

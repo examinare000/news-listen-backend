@@ -298,3 +298,37 @@ class UpdatePreferencesRequest(BaseModel):
     default_playback_speed: float | None = Field(default=None, gt=0)
     digest_enabled: bool | None = None
     digest_article_count: int | None = Field(default=None, ge=1, le=20)
+
+
+# ── ストレージ管理（使用量確認・一括削除） ────────────────────────
+
+
+class StorageUsageItem(BaseModel):
+    """ストレージ使用量レポートの個別 Podcast エントリー。"""
+
+    id: str
+    type: str
+    size_bytes: int
+    created_at: str  # ISO 8601
+
+
+class StorageUsageResponse(BaseModel):
+    """GET /podcasts/storage/usage のレスポンス。"""
+
+    total_bytes: int
+    podcast_count: int
+    items: list[StorageUsageItem]
+
+
+class StorageCleanupRequest(BaseModel):
+    """POST /podcasts/storage/cleanup のリクエスト。"""
+
+    older_than_days: int | None = Field(default=None, ge=0)
+
+
+class StorageCleanupResponse(BaseModel):
+    """POST /podcasts/storage/cleanup のレスポンス。"""
+
+    deleted_podcast_count: int
+    deleted_blob_count: int
+    freed_bytes: int
