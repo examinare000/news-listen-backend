@@ -23,7 +23,7 @@ API_KEY_HEADER = APIKeyHeader(name="X-API-Key", auto_error=False)
 # 検証エラー本文に平文を載せてはならない機微フィールド（資格情報の漏洩防止）。
 _SENSITIVE_FIELDS = frozenset({"password", "new_password", "current_password"})
 
-app = FastAPI(title="Tech News Podcast API", version="0.5.0")
+app = FastAPI(title="Tech News Podcast API", version="0.6.0")
 
 
 @app.exception_handler(RequestValidationError)
