@@ -112,7 +112,12 @@ class TestCsrfConfig:
         env = {}
         config = build_csrf_config(env)
         assert config.enabled is False
-        assert config.exempt_paths == {"/auth/login"}
+        # 未認証の事前認証エンドポイント（login + password reset）は CSRF 既定免除。
+        assert config.exempt_paths == {
+            "/auth/login",
+            "/auth/password/forgot",
+            "/auth/password/reset",
+        }
 
     def test_csrf_config_enabled_true(self):
         """CSRF_PROTECTION_ENABLED=true で enabled=True"""
@@ -177,9 +182,14 @@ class TestCsrfConfig:
         WHY: CSRF_EXEMPT_PATHS=" " や "," で空集合になると /auth/login まで CSRF 必須となり、
         トークン未取得のクライアントがログインできなくなる（ロックアウト）。
         """
+        default_exempt = {
+            "/auth/login",
+            "/auth/password/forgot",
+            "/auth/password/reset",
+        }
         for value in ["   ", ",", " , "]:
             config = build_csrf_config({"CSRF_EXEMPT_PATHS": value})
-            assert config.exempt_paths == {"/auth/login"}, f"value={value!r}"
+            assert config.exempt_paths == default_exempt, f"value={value!r}"
 
 
 # ============================================================================
