@@ -26,6 +26,8 @@ AuditAction = Literal[
     "preferences_update",
     "onboarding_complete",
     "storage_cleanup",
+    "password_reset_requested",
+    "password_reset_completed",
 ]
 
 # クロスユーザーキャッシュのデフォルト言語。現状は固定値（言語切替 UI は未実装）。
@@ -52,6 +54,7 @@ class User(BaseModel):
     - `user_id`: 各種データ（userPrefs/podcasts/recommendations）のパーティションキー。
       username とは分離し、ログイン ID を変更してもデータ参照が壊れないようにする（現状 username は不変）。
     - `password_hash`: bcrypt ハッシュ。平文は決して保存しない。API レスポンスにも含めない。
+    - `email`: メールアドレス（パスワードリセット用）。既存 Firestore ドキュメントには無いため Optional。
     """
 
     username: str
@@ -59,6 +62,7 @@ class User(BaseModel):
     password_hash: str
     role: UserRole = "user"
     display_name: str
+    email: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -203,3 +207,24 @@ class PushSubscription(BaseModel):
     auth: str
     platform: str = "webpush"
     created_at: datetime
+
+
+class PasswordResetToken(BaseModel):
+    """パスワードリセットトークン。
+
+    Firestore コレクション `passwordResetTokens/{token_hash}` に対応する。
+    doc_id は生トークンの SHA-256 ハッシュ（生トークンは DB に保存しない）。
+    - token_hash: 生トークンの SHA-256 ハッシュ（doc-id）。
+    - user_id: 対象ユーザー ID。
+    - username: 対象ユーザー名（監査・復旧用）。
+    - expires_at: トークン有効期限。
+    - created_at: 発行時刻。
+    - used_at: 消費時刻（None=未使用）。
+    """
+
+    token_hash: str
+    user_id: str
+    username: str
+    expires_at: datetime
+    created_at: datetime
+    used_at: datetime | None = None

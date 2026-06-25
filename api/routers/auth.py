@@ -24,14 +24,17 @@ from api.dependencies import (
     get_current_user,
     get_firestore_client,
     get_audit_logger,
+    get_email_sender,
 )
 from api.audit import AuditLogger
 from api.middleware.csrf import generate_csrf_token
 from api.schemas import (
+    ForgotPasswordRequest,
     LoginRequest,
     LoginResponse,
     PasswordChangeRequest,
     ProfileUpdateRequest,
+    ResetPasswordRequest,
     UserResponse,
 )
 from shared.firestore_client import FirestoreClient
@@ -296,4 +299,144 @@ def change_password(
     user.password_hash = hash_password(payload.new_password)
     user.updated_at = datetime.now(timezone.utc)
     db.save_user(user)
+    return {"status": "ok"}
+
+
+@router.post("/auth/password/forgot")
+def forgot_password(
+    payload: ForgotPasswordRequest,
+    request: Request,
+    db: FirestoreClient = Depends(get_firestore_client),
+    audit_logger: AuditLogger = Depends(get_audit_logger),
+    email_sender=Depends(get_email_sender),
+):
+    """パスワード忘れたフロー（認証不要）。
+
+    **常に 200 を返す**（ユーザー列挙対策）。
+    実在かつ email 有の場合のみ生トークン発行→save→send。
+    """
+    username = normalize_username(payload.username)
+    client_ip = get_client_ip(request)
+    now = datetime.now(timezone.utc)
+
+    # レート制限チェック（PASSWORD_RESET_RATELIMIT_* 環境変数）
+    max_requests = _env_int("PASSWORD_RESET_RATELIMIT_MAX_REQUESTS", 0, 0)
+    if max_requests > 0:
+        window_seconds = _env_int("PASSWORD_RESET_RATELIMIT_WINDOW_SECONDS", 3600, 1)
+        ip_key = "password_reset:ip:" + hash_token(client_ip)
+        allowed, retry_after = db.consume_rate_limit(ip_key, now, max_requests, window_seconds)
+        if not allowed:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Too many password reset attempts. Please try again later.",
+                headers={"Retry-After": str(retry_after)},
+            )
+
+    # ユーザー存在確認
+    user = db.get_user(username)
+
+    # 常に 200 を返す（存在有無を秘匿）
+    if user is None or user.email is None:
+        # ユーザー不在または email 無。副作用なし。監査は記録（発見可能性の秘匿）。
+        audit_logger.record(
+            action="password_reset_requested",
+            ip=client_ip,
+            details={"found": False},
+        )
+        return {"status": "ok"}
+
+    # ユーザー存在かつ email 有。生トークン発行→保存→送信
+    from shared.security import generate_session_token, hash_token as hash_token_fn
+    from shared.models import PasswordResetToken
+
+    raw_token = generate_session_token()
+    token_hash = hash_token_fn(raw_token)
+    # トークン寿命は env で調整可（既定 30 分）。短命にして漏洩時の窓を最小化する。
+    ttl_minutes = _env_int("PASSWORD_RESET_TOKEN_TTL_MINUTES", 30, 1)
+    expires_at = now + timedelta(minutes=ttl_minutes)
+
+    token = PasswordResetToken(
+        token_hash=token_hash,
+        user_id=user.user_id,
+        username=user.username,
+        expires_at=expires_at,
+        created_at=now,
+        used_at=None,
+    )
+
+    # トークン保存
+    db.save_reset_token(token)
+
+    # メール送信（非致命）
+    try:
+        password_reset_url_base = os.environ.get(
+            "PASSWORD_RESET_URL_BASE", "https://app.example.com/reset-password"
+        )
+        reset_url = f"{password_reset_url_base}?token={raw_token}"
+        email_sender.send_password_reset_email(user.email, reset_url)
+    except Exception:
+        # メール送信失敗は warning ログのみで、本操作は成功させる（非致命）
+        _logger.warning("Failed to send password reset email to %s", user.email)
+
+    # 監査ログ記録（details に平文 PW・token・hash 入れない）
+    audit_logger.record(
+        action="password_reset_requested",
+        ip=client_ip,
+        target_username=user.username,
+        details={"found": True},
+    )
+
+    return {"status": "ok"}
+
+
+@router.post("/auth/password/reset")
+def reset_password(
+    payload: ResetPasswordRequest,
+    request: Request,
+    db: FirestoreClient = Depends(get_firestore_client),
+    audit_logger: AuditLogger = Depends(get_audit_logger),
+):
+    """パスワードリセット（トークンで認証）。
+
+    有効なトークンなら password_hash 更新→delete_sessions_for_user。
+    期限切れ・既用・不正トークンは汎用 400（原因秘匿）。
+    """
+    client_ip = get_client_ip(request)
+    now = datetime.now(timezone.utc)
+
+    # トークンハッシュ化
+    token_hash = hash_token(payload.token)
+
+    # トークンレコード取得
+    token_record = db.get_reset_token(token_hash)
+    if token_record is None:
+        # 不正なトークン
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired reset token")
+
+    # トークン消費（期限・既用チェック + used_at セット）
+    if not db.consume_reset_token(token_hash, now):
+        # 期限切れ・既用・不在
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired reset token")
+
+    # ユーザー取得
+    user = db.get_user(token_record.username)
+    if user is None:
+        # トークンは有効だがユーザーが削除済み
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="User not found")
+
+    # パスワード更新
+    user.password_hash = hash_password(payload.new_password)
+    user.updated_at = now
+    db.save_user(user)
+
+    # 全セッション失効（強制ログアウト）
+    db.delete_sessions_for_user(user.user_id)
+
+    # 監査ログ記録（details に平文 PW・token・hash 入れない）
+    audit_logger.record(
+        action="password_reset_completed",
+        ip=client_ip,
+        target_username=user.username,
+    )
+
     return {"status": "ok"}
