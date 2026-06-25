@@ -256,3 +256,81 @@ class TestUserUpdateRequestValidation:
         )
         assert req.new_password == "Str0ng-Pass!23"
         assert req.role == "admin"
+
+
+# ---------- T4: StorageUsageItem / StorageUsageResponse / StorageCleanupRequest / StorageCleanupResponse ----------
+
+
+def test_storage_cleanup_request_validates_older_than_days():
+    """StorageCleanupRequest が older_than_days >= 0 を検証すること。"""
+    from api.schemas import StorageCleanupRequest
+
+    # 正常値
+    req = StorageCleanupRequest(older_than_days=10)
+    assert req.older_than_days == 10
+
+    # None（全件）
+    req = StorageCleanupRequest(older_than_days=None)
+    assert req.older_than_days is None
+
+    # 負値は 422
+    with pytest.raises(ValidationError) as exc_info:
+        StorageCleanupRequest(older_than_days=-1)
+    assert "greater than or equal to 0" in str(exc_info.value)
+
+
+def test_storage_cleanup_response_has_required_fields():
+    """StorageCleanupResponse が deleted_podcast_count / deleted_blob_count / freed_bytes を持つこと。"""
+    from api.schemas import StorageCleanupResponse
+
+    resp = StorageCleanupResponse(
+        deleted_podcast_count=5,
+        deleted_blob_count=4,
+        freed_bytes=1024000,
+    )
+    assert resp.deleted_podcast_count == 5
+    assert resp.deleted_blob_count == 4
+    assert resp.freed_bytes == 1024000
+
+
+def test_storage_usage_item_has_required_fields():
+    """StorageUsageItem が id / type / size_bytes / created_at を持つこと。"""
+    from api.schemas import StorageUsageItem
+
+    item = StorageUsageItem(
+        id="pod1",
+        type="digest",
+        size_bytes=512000,
+        created_at="2026-06-25T12:00:00+00:00",
+    )
+    assert item.id == "pod1"
+    assert item.type == "digest"
+    assert item.size_bytes == 512000
+    assert item.created_at == "2026-06-25T12:00:00+00:00"
+
+
+def test_storage_usage_response_has_required_fields():
+    """StorageUsageResponse が total_bytes / podcast_count / items を持つこと。"""
+    from api.schemas import StorageUsageResponse, StorageUsageItem
+
+    item1 = StorageUsageItem(
+        id="pod1",
+        type="digest",
+        size_bytes=512000,
+        created_at="2026-06-25T12:00:00+00:00",
+    )
+    item2 = StorageUsageItem(
+        id="pod2",
+        type="single",
+        size_bytes=256000,
+        created_at="2026-06-24T12:00:00+00:00",
+    )
+
+    resp = StorageUsageResponse(
+        total_bytes=768000,
+        podcast_count=2,
+        items=[item1, item2],
+    )
+    assert resp.total_bytes == 768000
+    assert resp.podcast_count == 2
+    assert len(resp.items) == 2

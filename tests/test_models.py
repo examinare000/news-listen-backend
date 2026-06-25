@@ -279,3 +279,15 @@ class TestPushSubscription:
                 endpoint="https://push.example.com/endpoint/abc123",
                 p256dh="key",
             )
+
+
+# ---------- T4: AuditAction Literal ----------
+
+
+def test_audit_action_includes_storage_cleanup():
+    """AuditAction に 'storage_cleanup' が含まれること。"""
+    from shared.models import AuditAction
+    from typing import get_args
+
+    valid_actions = get_args(AuditAction)
+    assert "storage_cleanup" in valid_actions

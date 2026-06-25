@@ -95,3 +95,135 @@ def test_generate_audio_url_fails_fast_when_credentials_cannot_sign():
 
         # 署名は試行されないこと
         mock_blob.generate_signed_url.assert_not_called()
+
+
+# ---------- T1: get_blob_size / delete_blob ----------
+
+
+def test_get_blob_size_returns_blob_size():
+    """get_blob_size(blob_name) が GCS blob のサイズ（バイト）を返すこと。"""
+    with patch.dict("os.environ", {"GCS_BUCKET_NAME": "test-bucket"}), \
+         patch("shared.storage_client.storage.Client") as mock_client_class:
+
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+        mock_blob = MagicMock()
+        mock_blob.size = 12345
+        mock_client.bucket.return_value.blob.return_value = mock_blob
+
+        from shared.storage_client import StorageClient
+        client = StorageClient()
+        size = client.get_blob_size("podcasts/pod1/audio.mp3")
+
+        assert size == 12345
+        mock_client.bucket.return_value.blob.assert_called_with("podcasts/pod1/audio.mp3")
+        mock_blob.reload.assert_called_once()
+
+
+def test_get_blob_size_returns_0_when_blob_not_found():
+    """blob が存在しない場合（NotFound）、0 を返す（例外を上げない）。"""
+    from google.cloud.exceptions import NotFound
+
+    with patch.dict("os.environ", {"GCS_BUCKET_NAME": "test-bucket"}), \
+         patch("shared.storage_client.storage.Client") as mock_client_class:
+
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+        mock_blob = MagicMock()
+        mock_blob.reload.side_effect = NotFound("not found")
+        mock_client.bucket.return_value.blob.return_value = mock_blob
+
+        from shared.storage_client import StorageClient
+        client = StorageClient()
+        size = client.get_blob_size("missing/blob.mp3")
+
+        assert size == 0
+
+
+def test_get_blob_size_returns_0_for_empty_blob_name():
+    """blob_name が空文字の場合、GCS を叩かず 0 を返す。"""
+    with patch.dict("os.environ", {"GCS_BUCKET_NAME": "test-bucket"}), \
+         patch("shared.storage_client.storage.Client") as mock_client_class:
+
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+
+        from shared.storage_client import StorageClient
+        client = StorageClient()
+        size = client.get_blob_size("")
+
+        assert size == 0
+        # GCS に一度も接触しないこと
+        mock_client.bucket.assert_not_called()
+
+
+def test_get_blob_size_returns_0_on_other_errors():
+    """blob 取得時に他のエラー（例：403 Forbidden）が起きても 0 を返す。"""
+    with patch.dict("os.environ", {"GCS_BUCKET_NAME": "test-bucket"}), \
+         patch("shared.storage_client.storage.Client") as mock_client_class:
+
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+        mock_blob = MagicMock()
+        mock_blob.reload.side_effect = Exception("access denied")
+        mock_client.bucket.return_value.blob.return_value = mock_blob
+
+        from shared.storage_client import StorageClient
+        client = StorageClient()
+        size = client.get_blob_size("forbidden/blob.mp3")
+
+        assert size == 0
+
+
+def test_delete_blob_calls_delete():
+    """delete_blob(blob_name) が blob.delete() を呼び出すこと。"""
+    with patch.dict("os.environ", {"GCS_BUCKET_NAME": "test-bucket"}), \
+         patch("shared.storage_client.storage.Client") as mock_client_class:
+
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+        mock_blob = MagicMock()
+        mock_client.bucket.return_value.blob.return_value = mock_blob
+
+        from shared.storage_client import StorageClient
+        client = StorageClient()
+        client.delete_blob("podcasts/pod1/audio.mp3")
+
+        mock_client.bucket.return_value.blob.assert_called_with("podcasts/pod1/audio.mp3")
+        mock_blob.delete.assert_called_once()
+
+
+def test_delete_blob_noop_when_blob_not_found():
+    """blob が存在しない場合（NotFound）、例外を上げず処理を続行する（冪等）。"""
+    from google.cloud.exceptions import NotFound
+
+    with patch.dict("os.environ", {"GCS_BUCKET_NAME": "test-bucket"}), \
+         patch("shared.storage_client.storage.Client") as mock_client_class:
+
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+        mock_blob = MagicMock()
+        mock_blob.delete.side_effect = NotFound("not found")
+        mock_client.bucket.return_value.blob.return_value = mock_blob
+
+        from shared.storage_client import StorageClient
+        client = StorageClient()
+        # 例外を上げないこと
+        client.delete_blob("missing/blob.mp3")
+
+
+def test_delete_blob_noop_on_other_errors():
+    """delete 時に他のエラー（例：403 Forbidden）が起きても例外を握り潰す。"""
+    with patch.dict("os.environ", {"GCS_BUCKET_NAME": "test-bucket"}), \
+         patch("shared.storage_client.storage.Client") as mock_client_class:
+
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+        mock_blob = MagicMock()
+        mock_blob.delete.side_effect = Exception("access denied")
+        mock_client.bucket.return_value.blob.return_value = mock_blob
+
+        from shared.storage_client import StorageClient
+        client = StorageClient()
+        # 例外を握り潰す（best-effort）
+        client.delete_blob("forbidden/blob.mp3")
