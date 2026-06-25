@@ -1,10 +1,39 @@
 """Gemini API wrapper for text generation and TTS."""
 from __future__ import annotations
 
+import hashlib
+import logging
 import os
+from dataclasses import dataclass
 
 from google import genai
 from google.genai import types
+
+logger = logging.getLogger(__name__)
+
+
+def recommendation_cache_display_name(user_id: str, stable_context: str) -> str:
+    """レコメンド用キャッシュの表示名を生成する（決定的）。
+
+    Args:
+        user_id: ユーザー ID。
+        stable_context: 安定部分のテキスト（指示＋履歴）。
+
+    Returns:
+        str: 表示名（形式: rec-{user_id}-{hash[:16]}）。
+    """
+    # WHY: ハッシュを使用することで、長いテキストを短い ID に圧縮し、
+    # 同じ内容なら常に同じ名前を生成する（クロスプロセス再利用が可能）。
+    context_hash = hashlib.sha256(stable_context.encode()).hexdigest()[:16]
+    return f"rec-{user_id}-{context_hash}"
+
+
+@dataclass
+class TextGenerationResult:
+    """Gemini のテキスト生成レスポンスと利用トークン情報。"""
+    text: str
+    prompt_token_count: int
+    cached_content_token_count: int
 
 
 class GeminiClient:
@@ -22,6 +51,112 @@ class GeminiClient:
             config=types.GenerateContentConfig(temperature=temperature),
         )
         return response.text
+
+    def generate_text_with_usage(
+        self,
+        prompt: str,
+        *,
+        cached_content: str | None = None,
+        temperature: float = 0.7,
+    ) -> TextGenerationResult:
+        """テキスト生成を実行し、トークン利用情報を含むレスポンスを返す。
+
+        Args:
+            prompt: 生成プロンプト。
+            cached_content: キャッシュ名（caches.create で返された name）。None なら通常呼び出し。
+            temperature: 温度パラメータ。
+
+        Returns:
+            TextGenerationResult: text、prompt_token_count、cached_content_token_count を含む結果。
+                usage_metadata が無い場合は token_count を 0 に安全化。
+        """
+        response = self._client.models.generate_content(
+            model=self.TEXT_MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                cached_content=cached_content,
+                temperature=temperature,
+            ),
+        )
+
+        # WHY: usage_metadata が無いケース（例：SDK 構造変更）に対応し、
+        # AttributeError でクラッシュせず 0 で安全化
+        prompt_token_count = 0
+        cached_content_token_count = 0
+        if response.usage_metadata is not None:
+            prompt_token_count = getattr(response.usage_metadata, "prompt_token_count", 0)
+            cached_content_token_count = getattr(
+                response.usage_metadata, "cached_content_token_count", 0
+            )
+
+        return TextGenerationResult(
+            text=response.text,
+            prompt_token_count=prompt_token_count,
+            cached_content_token_count=cached_content_token_count,
+        )
+
+    def create_cached_content(
+        self,
+        system_instruction: str,
+        *,
+        display_name: str,
+        ttl_seconds: int,
+    ) -> str | None:
+        """system_instruction をキャッシュし、キャッシュ名を返す。
+
+        Args:
+            system_instruction: キャッシュする system_instruction テキスト。
+            display_name: キャッシュの表示名（find_cached_content で検索用）。
+            ttl_seconds: TTL（秒単位）。
+
+        Returns:
+            str: キャッシュ名（caches.create が返した name）。
+                 作成失敗や例外時は None を返し、warning をログする。
+        """
+        try:
+            # WHY: ttl は Google API の duration 文字列形式（例："3600s"）で指定する。
+            # google.genai の types は ttl: str パラメータを期待する。
+            ttl_duration = f"{ttl_seconds}s"
+            cached_content = self._client.caches.create(
+                model=self.TEXT_MODEL,
+                config=types.CreateCachedContentConfig(
+                    systemInstruction=system_instruction,
+                    displayName=display_name,
+                    ttl=ttl_duration,
+                ),
+            )
+            return cached_content.name
+        except Exception as e:
+            logger.warning(
+                "Failed to create cached content (display_name=%r): %s",
+                display_name,
+                e,
+            )
+            return None
+
+    def find_cached_content(self, display_name: str) -> str | None:
+        """display_name が一致する既存キャッシュを探し、キャッシュ名を返す。
+
+        Args:
+            display_name: 検索する表示名。
+
+        Returns:
+            str: 見つかったキャッシュの name。
+                 見つからない / 例外時は None を返し、必要に応じて warning をログする。
+        """
+        try:
+            cached_contents = self._client.caches.list()
+            for cached_content in cached_contents:
+                if getattr(cached_content, "display_name", None) == display_name:
+                    return cached_content.name
+            return None
+        except Exception as e:
+            logger.warning(
+                "Failed to list cached contents (display_name=%r): %s",
+                display_name,
+                e,
+            )
+            return None
 
     def generate_tts(self, text: str, voice: str = "Kore") -> bytes:
         """テキストを音声バイト列（PCM）に変換する。
