@@ -149,3 +149,17 @@ def get_audit_logger():
     from api.audit import AuditLogger
 
     return AuditLogger(firestore_client=get_firestore_client())
+
+
+@lru_cache(maxsize=1)
+def get_email_sender():
+    """EmailSender のシングルトンを返す。
+
+    環境変数から SMTP 設定を読み込み、揃っていれば SmtpEmailSender、
+    未設定なら NoOpEmailSender を返す（テスト・ローカル安全）。
+    """
+    import os
+
+    from shared.email_sender import build_email_sender
+
+    return build_email_sender(os.environ)

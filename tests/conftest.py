@@ -62,6 +62,16 @@ def mock_audit():
 
 
 @pytest.fixture
+def mock_email_sender():
+    """API ルーターテスト用の EmailSender モック。
+
+    send_password_reset_email() を呼び出してメール送信が試みられたことを検証する。
+    """
+    mock = MagicMock()
+    return mock
+
+
+@pytest.fixture
 def current_session():
     """API テスト用の固定 Session（get_current_user override で使用）。
 
@@ -130,13 +140,27 @@ def podcast_generator_mocks():
         yield db
 
 
+class _TestClientWithDefaultHeaders(TestClient):
+    """X-API-Key をデフォルトで付与する TestClient。"""
+
+    def request(self, *args, **kwargs):
+        """リクエストメソッドをオーバーライド。headers に API-Key を追加。"""
+        headers = kwargs.get("headers", {})
+        if isinstance(headers, dict):
+            # 既に X-API-Key がなければ追加
+            if "X-API-Key" not in headers:
+                headers["X-API-Key"] = "test-key"
+            kwargs["headers"] = headers
+        return super().request(*args, **kwargs)
+
+
 @pytest.fixture
-def api_client(mock_db, mock_storage, mock_job_trigger, mock_audit):
+def api_client(mock_db, mock_storage, mock_job_trigger, mock_audit, mock_email_sender):
     """API_KEY と USER_ID を設定した TestClient。
 
-    FirestoreClient / StorageClient / JobTrigger / AuditLogger は dependency_overrides 経由で
-    モックに差し替えられる。テスト内で mock_db / mock_storage のメソッドを設定してから
-    api_client を呼ぶこと。
+    FirestoreClient / StorageClient / JobTrigger / AuditLogger / EmailSender は
+    dependency_overrides 経由でモックに差し替えられる。テスト内で mock_db / mock_storage
+    のメソッドを設定してから api_client を呼ぶこと。
 
     例:
         def test_foo(api_client, mock_db, mock_storage, mock_audit):
@@ -146,7 +170,8 @@ def api_client(mock_db, mock_storage, mock_job_trigger, mock_audit):
             # 監査ログが記録されたことを確認
             mock_audit.record.assert_called()
 
-    LOGIN_RATELIMIT_MAX_ATTEMPTS はデフォルト 0（無効化）。
+    X-API-Key はデフォルトで "test-key" が自動付与される（ヘッダー override で置き換え可）。
+    LOGIN_RATELIMIT_MAX_ATTEMPTS / PASSWORD_RESET_RATELIMIT_MAX_REQUESTS はデフォルト 0（無効化）。
     テスト側で明示的に有効化する場合は patch.dict で環境変数をセットして
     モジュールをリロードすること。
     """
@@ -158,9 +183,37 @@ def api_client(mock_db, mock_storage, mock_job_trigger, mock_audit):
             "LOGIN_RATELIMIT_MAX_ATTEMPTS": "0",
             "API_RATELIMIT_MAX_REQUESTS": "0",
             "STAR_RATELIMIT_MAX_REQUESTS": "0",
+            "PASSWORD_RESET_RATELIMIT_MAX_REQUESTS": "0",
+            "CSRF_PROTECTION_ENABLED": "false",
+            "PASSWORD_RESET_URL_BASE": "https://test.example.com/reset-password",
         },
     ):
         import importlib
+
+        # WHY: 他テスト（test_api_auth が api.routers.auth を、test_dependencies が
+        # api.dependencies を importlib.reload する）により、ルーターの Depends が参照する
+        # 依存関数オブジェクトと、本 fixture が import して dependency_overrides のキーにする
+        # 関数オブジェクトの同一性がズレることがある。ズレると override が外れ、ルーターが
+        # 実 FirestoreClient を構築して DefaultCredentialsError になる（full-suite でのみ再現）。
+        # main 再ロード前にルーター群を再ロードして、現行 api.dependencies へ再束縛し同一性を揃える。
+        # その前に api.ratelimit を再ロードする。ルーターの Depends(rate_limit(...)) が生成する
+        # _rate_limit_dep は api.ratelimit の module-global get_firestore_client を Depends に使うため、
+        # ここを現行 api.dependencies へ揃えないと、その sub-dependency だけ override が外れて実 client
+        # を構築してしまう（ルーター再ロードはこの後なので、再生成される _rate_limit_dep も正準化される）。
+        import api.ratelimit
+        importlib.reload(api.ratelimit)
+
+        from api.routers import (
+            admin,
+            articles,
+            auth,
+            feed,
+            notifications,
+            podcasts,
+            settings as settings_router,
+        )
+        for _router_mod in (admin, articles, auth, feed, notifications, podcasts, settings_router):
+            importlib.reload(_router_mod)
 
         import api.main as m
         from api.dependencies import (
@@ -169,17 +222,26 @@ def api_client(mock_db, mock_storage, mock_job_trigger, mock_audit):
             get_storage_client,
             get_user_id,
             get_audit_logger,
+            get_email_sender,
         )
 
         importlib.reload(m)
+        # lru_cache をクリア
+        get_firestore_client.cache_clear()
+        get_job_trigger.cache_clear()
+        get_audit_logger.cache_clear()
+        get_email_sender.cache_clear()
+        get_storage_client.cache_clear()
+
         # lru_cache をバイパスして各テストに独立したモックを注入する
         m.app.dependency_overrides[get_firestore_client] = lambda: mock_db
         m.app.dependency_overrides[get_storage_client] = lambda: mock_storage
         m.app.dependency_overrides[get_job_trigger] = lambda: mock_job_trigger
         m.app.dependency_overrides[get_audit_logger] = lambda: mock_audit
+        m.app.dependency_overrides[get_email_sender] = lambda: mock_email_sender
         # get_user_id はセッション由来へ変更されたため、既存ルーターテストでは固定 user_id を注入する。
         # 認証フロー自体（get_current_user／get_session）を検証するテストは mock_db.get_session を
         # 設定し、本オーバーライドに依存しない auth/admin エンドポイントを直接叩く。
         m.app.dependency_overrides[get_user_id] = lambda: "user1"
-        yield TestClient(m.app)
+        yield _TestClientWithDefaultHeaders(m.app)
         m.app.dependency_overrides.clear()

@@ -118,9 +118,12 @@ def build_csrf_config(env: Mapping[str, str]) -> CsrfConfig:
     exempt_paths = {p for p in paths if p}
     # WHY: env が未設定や空白のみ（例 " " や ","）の場合に空集合へ縮退すると、
     #       /auth/login まで CSRF 必須になり「トークン未取得 → ログイン不能」のロックアウトを招く。
-    #       明示的に空でない値が与えられた時だけ上書きし、それ以外は既定 /auth/login を保証する。
+    #       明示的に空でない値が与えられた時だけ上書きし、それ以外は既定を保証する。
+    #       password/forgot・password/reset は**未認証**（セッション Cookie 無し）の事前認証
+    #       エンドポイントで、リセットトークン自体が CSRF 相当の保護を担う。double-submit
+    #       cookie を要求するとログアウト中のユーザーがリセットできなくなるため login と同様に免除する。
     if not exempt_paths:
-        exempt_paths = {"/auth/login"}
+        exempt_paths = {"/auth/login", "/auth/password/forgot", "/auth/password/reset"}
 
     return CsrfConfig(enabled=enabled, exempt_paths=exempt_paths)
 

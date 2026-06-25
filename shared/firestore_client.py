@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import uuid
 from datetime import datetime, timedelta, timezone
+from typing import TYPE_CHECKING
 
 from google.cloud import firestore
 
@@ -19,6 +20,9 @@ from shared.models import (
     User,
     UserPrefs,
 )
+
+if TYPE_CHECKING:
+    from shared.models import PasswordResetToken
 
 
 class FirestoreClient:
@@ -768,3 +772,68 @@ class FirestoreClient:
         doc = self._db.collection("pushSubscriptions").document(doc_id).get()
         if doc.exists and doc.to_dict().get("user_id") == user_id:
             self._db.collection("pushSubscriptions").document(doc_id).delete()
+
+    # ---------- Password Reset Tokens ----------
+
+    def save_reset_token(self, token: "PasswordResetToken") -> None:
+        """パスワードリセットトークンを保存する。
+
+        Firestore コレクション `passwordResetTokens/{token_hash}` に保存。
+        **ペイロードに生トークンを含めない**（token_hash のみ）。
+        """
+        data = token.model_dump(mode="json")
+        # token_hash を doc-id として使うため、ペイロードからは除外しない（firestore で id を復元）
+        self._db.collection("passwordResetTokens").document(token.token_hash).set(data)
+
+    def get_reset_token(self, token_hash: str) -> "PasswordResetToken | None":
+        """パスワードリセットトークンを取得する（O(1) 直引き）。
+
+        Args:
+            token_hash: 生トークンの SHA-256 ハッシュ
+
+        Returns:
+            PasswordResetToken or None（不在の場合）
+        """
+        from shared.models import PasswordResetToken
+
+        doc = self._db.collection("passwordResetTokens").document(token_hash).get()
+        if not doc.exists:
+            return None
+        return PasswordResetToken(**doc.to_dict())
+
+    def consume_reset_token(self, token_hash: str, now: datetime) -> bool:
+        """パスワードリセットトークンを消費する（トランザクション）。
+
+        未使用かつ期限内のトークンのみ消費可能。
+        used_at = now で原子的に更新し、他のリクエストとの競合を防ぐ。
+
+        Args:
+            token_hash: 生トークンの SHA-256 ハッシュ
+            now: 現在時刻（テスト容易性のため注入可能）
+
+        Returns:
+            True: 消費成功。False: 不在・期限切れ・既用。
+        """
+        ref = self._db.collection("passwordResetTokens").document(token_hash)
+
+        @firestore.transactional
+        def _consume(transaction) -> bool:
+            snapshot = ref.get(transaction=transaction)
+            if not snapshot.exists:
+                return False
+
+            data = snapshot.to_dict()
+            # 検証: used_at が None（未使用）か確認
+            if data.get("used_at") is not None:
+                return False
+
+            # 検証: 期限内か確認
+            expires_at = data.get("expires_at")
+            if expires_at is None or now >= expires_at:
+                return False
+
+            # 検証成功: used_at を now に更新
+            transaction.update(ref, {"used_at": now})
+            return True
+
+        return _consume(self._db.transaction())

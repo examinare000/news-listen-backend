@@ -209,6 +209,28 @@ class PasswordChangeRequest(BaseModel):
         return v
 
 
+class ForgotPasswordRequest(BaseModel):
+    """パスワード忘れたリクエスト（認証不要）。"""
+
+    username: str = Field(min_length=1, max_length=64)
+
+
+class ResetPasswordRequest(BaseModel):
+    """パスワードリセットリクエスト。"""
+
+    token: str = Field(min_length=1)
+    new_password: str = Field(min_length=_PASSWORD_MIN, max_length=_PASSWORD_MAX)
+
+    @field_validator("new_password", mode="after")
+    @classmethod
+    def _validate_new_password_strength(cls, v):
+        """新しいパスワードの強度を検証。"""
+        from shared.password_policy import validate_password_strength
+
+        validate_password_strength(v, username=None)
+        return v
+
+
 class ProfileUpdateRequest(BaseModel):
     display_name: str = Field(min_length=1, max_length=64)
 
