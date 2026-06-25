@@ -20,6 +20,7 @@ AuditAction = Literal[
     "session_revoke",
     "article_star",
     "article_dismiss",
+    "article_mark_read",
     "rss_source_add",
     "rss_source_remove",
     "preferences_update",
@@ -97,6 +98,7 @@ class UserPrefs(BaseModel):
     user_id: str
     starred_article_ids: list[str] = Field(default_factory=list)
     dismissed_article_ids: list[str] = Field(default_factory=list)
+    read_article_ids: list[str] = Field(default_factory=list)
     rss_sources: list[RssSource] = Field(default_factory=list)
     default_difficulty: DifficultyLevel
     default_playback_speed: float = 1.0

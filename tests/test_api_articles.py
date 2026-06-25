@@ -274,3 +274,90 @@ def test_dismiss_article_does_not_record_when_404(api_client_with_auth, mock_db,
 
     assert response.status_code == 404
     mock_audit.record.assert_not_called()
+
+
+def test_mark_read_article_returns_200(api_client_with_auth, mock_db):
+    """mark_read が 200 で ActionResponse(status='read', article_id=...) を返す。"""
+    mock_db.article_exists.return_value = True
+
+    response = api_client_with_auth.post(
+        "/articles/abc123/mark-read",
+        headers={"X-API-Key": "test-key"},
+    )
+    assert response.status_code == 200
+    assert response.json()["status"] == "read"
+    assert response.json()["article_id"] == "abc123"
+    mock_db.add_read_article.assert_called_once_with("user1", "abc123")
+
+
+def test_mark_read_article_returns_404_when_not_found(api_client_with_auth, mock_db):
+    """記事が存在しない場合は 404 を返す。"""
+    mock_db.article_exists.return_value = False
+
+    response = api_client_with_auth.post(
+        "/articles/missing/mark-read",
+        headers={"X-API-Key": "test-key"},
+    )
+    assert response.status_code == 404
+
+
+def test_mark_read_article_is_idempotent(api_client_with_auth, mock_db):
+    """mark_read は冪等（同じ記事を複数回マークしても重複しない）。"""
+    mock_db.article_exists.return_value = True
+
+    # 2回呼び出し
+    api_client_with_auth.post(
+        "/articles/abc123/mark-read",
+        headers={"X-API-Key": "test-key"},
+    )
+    api_client_with_auth.post(
+        "/articles/abc123/mark-read",
+        headers={"X-API-Key": "test-key"},
+    )
+
+    # 2回とも add_read_article が呼ばれるが、Firestore の ArrayUnion で自動的に重複回避
+    assert mock_db.add_read_article.call_count == 2
+    mock_db.add_read_article.assert_any_call("user1", "abc123")
+
+
+def test_mark_read_article_does_not_trigger_jobs(api_client_with_auth, mock_db, mock_job_trigger):
+    """mark_read はジョブを起動しない（recommendation も podcast も）。"""
+    mock_db.article_exists.return_value = True
+
+    api_client_with_auth.post(
+        "/articles/abc123/mark-read",
+        headers={"X-API-Key": "test-key"},
+    )
+
+    # ジョブが一度も起動されないこと
+    mock_job_trigger.trigger.assert_not_called()
+
+
+def test_mark_read_article_records_audit_log(api_client_with_auth, mock_db, mock_audit):
+    """mark_read が成功時に audit.record を正しい action・details で呼ぶ。"""
+    mock_db.article_exists.return_value = True
+
+    response = api_client_with_auth.post(
+        "/articles/abc123/mark-read",
+        headers={"X-API-Key": "test-key"},
+    )
+
+    assert response.status_code == 200
+    # audit.record が "article_mark_read" action で呼ばれたことを確認
+    mock_audit.record.assert_called_once()
+    call_kwargs = mock_audit.record.call_args.kwargs
+    assert call_kwargs["action"] == "article_mark_read"
+    assert call_kwargs["details"]["article_id"] == "abc123"
+
+
+def test_mark_read_article_does_not_record_when_404(api_client_with_auth, mock_db, mock_audit):
+    """記事が存在しない場合（404）は audit.record を呼ばない。"""
+    mock_db.article_exists.return_value = False
+
+    response = api_client_with_auth.post(
+        "/articles/missing/mark-read",
+        headers={"X-API-Key": "test-key"},
+    )
+
+    assert response.status_code == 404
+    mock_audit.record.assert_not_called()

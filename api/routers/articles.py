@@ -86,3 +86,28 @@ def dismiss_article(
     background_tasks.add_task(job_trigger.trigger, "recommendation", user_id)
 
     return ActionResponse(status="dismissed", article_id=article_id)
+
+
+@router.post("/articles/{article_id}/mark-read", response_model=ActionResponse)
+def mark_read_article(
+    article_id: str,
+    http_request: Request,
+    current: Session = Depends(get_current_user),
+    db: FirestoreClient = Depends(get_firestore_client),
+    audit_logger: AuditLogger = Depends(get_audit_logger),
+):
+    user_id = current.user_id
+    if not db.article_exists(article_id):
+        raise HTTPException(status_code=404, detail="Article not found")
+
+    db.add_read_article(user_id, article_id)
+
+    # 監査ログ記録（成功後）
+    audit_logger.record(
+        action="article_mark_read",
+        actor=current,
+        ip=get_client_ip(http_request),
+        details={"article_id": article_id},
+    )
+
+    return ActionResponse(status="read", article_id=article_id)

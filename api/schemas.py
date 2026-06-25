@@ -36,6 +36,7 @@ class ArticleResponse(BaseModel):
     source: str
     score: float
     published_at: str  # ISO 8601
+    is_read: bool = False
 
 
 class FeedResponse(BaseModel):

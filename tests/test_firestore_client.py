@@ -93,6 +93,30 @@ def test_get_user_prefs_returns_default_when_not_found(mock_firestore_db):
     assert prefs.default_difficulty == "toeic_900"
 
 
+def test_add_read_article_uses_array_union_merge(mock_firestore_db):
+    """add_read_article が add_dismissed_article と同形で ArrayUnion/merge を使う（冪等）。"""
+    from shared.firestore_client import FirestoreClient
+
+    client = FirestoreClient()
+    mock_doc_ref = MagicMock()
+    mock_firestore_db.collection.return_value.document.return_value = mock_doc_ref
+
+    client.add_read_article("user1", "article123")
+
+    # userPrefs コレクション・user1 ドキュメントにアクセス
+    mock_firestore_db.collection.assert_called_with("userPrefs")
+    mock_firestore_db.collection.return_value.document.assert_called_with("user1")
+
+    # set({"read_article_ids": ArrayUnion([...])}, merge=True) で呼ばれること
+    call_args = mock_doc_ref.set.call_args
+    assert call_args is not None
+    # 第1引数がデータ
+    data = call_args[0][0]
+    assert "read_article_ids" in data
+    # 第2引数 merge=True
+    assert call_args[1].get("merge") is True
+
+
 def test_get_podcast_returns_podcast_by_id(mock_firestore_db):
     """get_podcast(podcast_id) が O(1) で直接 Firestore ドキュメントを取得することを確認する"""
     from shared.firestore_client import FirestoreClient
