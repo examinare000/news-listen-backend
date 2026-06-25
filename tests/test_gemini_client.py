@@ -2,6 +2,209 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 
+# === T1: TextGenerationResult と generate_text_with_usage ===
+
+
+def test_generate_text_with_usage_returns_result_with_text_and_usage():
+    """generate_text_with_usage は text、prompt_token_count、cached_content_token_count を返す"""
+    with patch("shared.gemini_client.genai.Client") as mock_client_class:
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+
+        mock_usage = MagicMock()
+        mock_usage.prompt_token_count = 100
+        mock_usage.cached_content_token_count = 0
+        mock_response = MagicMock()
+        mock_response.text = "Generated response"
+        mock_response.usage_metadata = mock_usage
+        mock_client.models.generate_content.return_value = mock_response
+
+        from shared.gemini_client import GeminiClient
+        client = GeminiClient(api_key="test-key")
+        result = client.generate_text_with_usage("Test prompt", temperature=0.7)
+
+        assert result.text == "Generated response"
+        assert result.prompt_token_count == 100
+        assert result.cached_content_token_count == 0
+
+
+def test_generate_text_with_usage_defaults_usage_metadata_to_zero_if_missing():
+    """usage_metadata が無い場合、prompt_token_count/cached_content_token_count は 0 に安全化"""
+    with patch("shared.gemini_client.genai.Client") as mock_client_class:
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+
+        mock_response = MagicMock()
+        mock_response.text = "Generated response"
+        mock_response.usage_metadata = None  # 無いケース
+        mock_client.models.generate_content.return_value = mock_response
+
+        from shared.gemini_client import GeminiClient
+        client = GeminiClient(api_key="test-key")
+        result = client.generate_text_with_usage("Test prompt", temperature=0.7)
+
+        assert result.text == "Generated response"
+        assert result.prompt_token_count == 0
+        assert result.cached_content_token_count == 0
+
+
+def test_generate_text_with_usage_with_cached_content_parameter():
+    """generate_text_with_usage は cached_content パラメータを GenerateContentConfig に渡す"""
+    with patch("shared.gemini_client.genai.Client") as mock_client_class:
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+
+        mock_usage = MagicMock()
+        mock_usage.prompt_token_count = 50
+        mock_usage.cached_content_token_count = 100
+        mock_response = MagicMock()
+        mock_response.text = "Cached result"
+        mock_response.usage_metadata = mock_usage
+        mock_client.models.generate_content.return_value = mock_response
+
+        from shared.gemini_client import GeminiClient
+        client = GeminiClient(api_key="test-key")
+        result = client.generate_text_with_usage(
+            "Test prompt", cached_content="cache-name-123", temperature=0.7
+        )
+
+        assert result.text == "Cached result"
+        assert result.cached_content_token_count == 100
+        # generate_content の呼び出しを確認（cached_content が config に渡されている）
+        call_args = mock_client.models.generate_content.call_args
+        assert call_args is not None
+
+
+# === T2: create_cached_content ===
+
+
+def test_create_cached_content_returns_cache_name():
+    """create_cached_content は caches.create が返した name を返す"""
+    with patch("shared.gemini_client.genai.Client") as mock_client_class:
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+
+        mock_cache = MagicMock()
+        mock_cache.name = "projects/test/locations/us-central1/cachedContents/cache123"
+        mock_client.caches.create.return_value = mock_cache
+
+        from shared.gemini_client import GeminiClient
+        client = GeminiClient(api_key="test-key")
+        result = client.create_cached_content(
+            system_instruction="You are a helpful assistant",
+            display_name="test-cache",
+            ttl_seconds=3600,
+        )
+
+        assert result == "projects/test/locations/us-central1/cachedContents/cache123"
+        mock_client.caches.create.assert_called_once()
+
+
+def test_create_cached_content_returns_none_on_exception():
+    """create_cached_content は例外時に None を返し warning をログする"""
+    with patch("shared.gemini_client.genai.Client") as mock_client_class:
+        with patch("shared.gemini_client.logger") as mock_logger:
+            mock_client = MagicMock()
+            mock_client_class.return_value = mock_client
+            mock_client.caches.create.side_effect = Exception("Cache creation failed")
+
+            from shared.gemini_client import GeminiClient
+            client = GeminiClient(api_key="test-key")
+            result = client.create_cached_content(
+                system_instruction="You are a helpful assistant",
+                display_name="test-cache",
+                ttl_seconds=3600,
+            )
+
+            assert result is None
+            mock_logger.warning.assert_called_once()
+
+
+# === T3: find_cached_content と recommendation_cache_display_name ===
+
+
+def test_find_cached_content_returns_cache_name_when_found():
+    """find_cached_content は display_name が一致するキャッシュの name を返す"""
+    with patch("shared.gemini_client.genai.Client") as mock_client_class:
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+
+        mock_cache1 = MagicMock()
+        mock_cache1.display_name = "rec-user1-abc123"
+        mock_cache1.name = "projects/test/locations/us-central1/cachedContents/cache1"
+
+        mock_cache2 = MagicMock()
+        mock_cache2.display_name = "rec-user1-xyz789"
+        mock_cache2.name = "projects/test/locations/us-central1/cachedContents/cache2"
+
+        mock_client.caches.list.return_value = [mock_cache1, mock_cache2]
+
+        from shared.gemini_client import GeminiClient
+        client = GeminiClient(api_key="test-key")
+        result = client.find_cached_content("rec-user1-abc123")
+
+        assert result == "projects/test/locations/us-central1/cachedContents/cache1"
+
+
+def test_find_cached_content_returns_none_when_not_found():
+    """find_cached_content は display_name が一致しない場合 None を返す"""
+    with patch("shared.gemini_client.genai.Client") as mock_client_class:
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+        mock_client.caches.list.return_value = []
+
+        from shared.gemini_client import GeminiClient
+        client = GeminiClient(api_key="test-key")
+        result = client.find_cached_content("nonexistent")
+
+        assert result is None
+
+
+def test_find_cached_content_returns_none_on_exception():
+    """find_cached_content は例外時に None を返し warning をログする"""
+    with patch("shared.gemini_client.genai.Client") as mock_client_class:
+        with patch("shared.gemini_client.logger") as mock_logger:
+            mock_client = MagicMock()
+            mock_client_class.return_value = mock_client
+            mock_client.caches.list.side_effect = Exception("List failed")
+
+            from shared.gemini_client import GeminiClient
+            client = GeminiClient(api_key="test-key")
+            result = client.find_cached_content("test")
+
+            assert result is None
+            mock_logger.warning.assert_called_once()
+
+
+def test_recommendation_cache_display_name_is_deterministic():
+    """recommendation_cache_display_name は同じ入力で常に同じ名前を返す（決定的）"""
+    from shared.gemini_client import recommendation_cache_display_name
+
+    user_id = "user123"
+    stable_context = "starred: [A, B], dismissed: [C]"
+
+    result1 = recommendation_cache_display_name(user_id, stable_context)
+    result2 = recommendation_cache_display_name(user_id, stable_context)
+
+    assert result1 == result2
+    # 形式: rec-{user_id}-{hash}
+    assert result1.startswith("rec-user123-")
+
+
+def test_recommendation_cache_display_name_differs_with_different_context():
+    """recommendation_cache_display_name は context が異なると異なる名前を返す"""
+    from shared.gemini_client import recommendation_cache_display_name
+
+    user_id = "user123"
+    context1 = "starred: [A, B], dismissed: [C]"
+    context2 = "starred: [A], dismissed: [C]"
+
+    result1 = recommendation_cache_display_name(user_id, context1)
+    result2 = recommendation_cache_display_name(user_id, context2)
+
+    assert result1 != result2
+
+
 def test_generate_text_returns_string():
     with patch("shared.gemini_client.genai.Client") as mock_client_class:
         mock_client = MagicMock()
