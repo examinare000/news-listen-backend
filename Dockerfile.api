@@ -11,8 +11,7 @@ COPY api/ ./api/
 # `python -m jobs.*.main` を起動するため jobs/ を同梱する。Cloud Run の cloud_run モードでは
 # Admin API 経由でジョブを起動するため未使用だが、同一イメージで両モードを賄う。
 COPY jobs/ ./jobs/
-# 初期ユーザー投入スクリプト。起動時フック（SEED_USERS_ON_STARTUP）および
-# 手動実行（python -m scripts.seed_users）の双方で使用する。
+# 初期ユーザー投入スクリプト。手動実行（python -m scripts.seed_users）で使用する。
 COPY scripts/ ./scripts/
 
 # 非root ユーザーで実行し、コンテナ侵害時の権限を最小化する。
