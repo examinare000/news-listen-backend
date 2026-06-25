@@ -354,3 +354,13 @@ class StorageCleanupResponse(BaseModel):
     deleted_podcast_count: int
     deleted_blob_count: int
     freed_bytes: int
+
+
+# ── 記事検索 ────────────────────────
+
+
+class ArticleSearchResponse(BaseModel):
+    """GET /articles/search のレスポンス。"""
+
+    articles: list[ArticleResponse]
+    total_count: int
