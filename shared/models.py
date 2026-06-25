@@ -18,6 +18,12 @@ AuditAction = Literal[
     "user_password_reset",
     "user_delete",
     "session_revoke",
+    "article_star",
+    "article_dismiss",
+    "rss_source_add",
+    "rss_source_remove",
+    "preferences_update",
+    "onboarding_complete",
 ]
 
 # クロスユーザーキャッシュのデフォルト言語。現状は固定値（言語切替 UI は未実装）。
