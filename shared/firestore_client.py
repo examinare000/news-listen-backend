@@ -271,6 +271,17 @@ class FirestoreClient:
         )
         return [Podcast(**{**doc.to_dict(), "id": doc.id}) for doc in docs]
 
+    def delete_podcast(self, podcast_id: str) -> None:
+        """Podcast を削除する（冪等・type 問わず全削除）。
+
+        podcasts/{podcast_id} ドキュメントを削除する。
+        ドキュメント不在でも例外を上げない（Firestore delete() の仕様）。
+
+        Args:
+            podcast_id: 削除対象の Podcast ID。
+        """
+        self._db.collection("podcasts").document(podcast_id).delete()
+
     def podcast_exists_for_article(
         self, user_id: str, article_id: str, difficulty: str,
         statuses: tuple[str, ...] = ("completed",)

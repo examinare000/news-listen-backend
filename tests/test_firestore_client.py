@@ -731,3 +731,36 @@ def test_promote_user_podcast_sets_error_message_when_failed(mock_firestore_db):
     _, update_data = transaction.update.call_args[0]
     assert update_data["status"] == "failed"
     assert update_data["error_message"] == "API error"
+
+
+# ---------- T2: delete_podcast ----------
+
+
+def test_delete_podcast_calls_document_delete(mock_firestore_db):
+    """delete_podcast(podcast_id) が podcasts/{podcast_id} を削除する（冪等）。"""
+    from shared.firestore_client import FirestoreClient
+    client = FirestoreClient()
+
+    mock_doc_ref = MagicMock()
+    mock_firestore_db.collection.return_value.document.return_value = mock_doc_ref
+
+    client.delete_podcast("pod1")
+
+    mock_firestore_db.collection.assert_called_with("podcasts")
+    mock_firestore_db.collection.return_value.document.assert_called_with("pod1")
+    mock_doc_ref.delete.assert_called_once()
+
+
+def test_delete_podcast_noop_when_doc_not_found(mock_firestore_db):
+    """delete_podcast が doc に存在しない場合でも例外を上げない（冪等）。"""
+    from shared.firestore_client import FirestoreClient
+    client = FirestoreClient()
+
+    mock_doc_ref = MagicMock()
+    # delete() が例外を上げずに完了する（Firestore は不在の delete でも成功）
+    mock_firestore_db.collection.return_value.document.return_value = mock_doc_ref
+
+    # 呼び出し側で例外を上げないこと
+    client.delete_podcast("missing_pod")
+
+    mock_doc_ref.delete.assert_called_once()

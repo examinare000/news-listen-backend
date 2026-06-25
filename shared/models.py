@@ -25,6 +25,7 @@ AuditAction = Literal[
     "rss_source_remove",
     "preferences_update",
     "onboarding_complete",
+    "storage_cleanup",
 ]
 
 # クロスユーザーキャッシュのデフォルト言語。現状は固定値（言語切替 UI は未実装）。
