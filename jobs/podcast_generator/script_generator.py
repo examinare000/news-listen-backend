@@ -40,6 +40,23 @@ _SCRIPT_PROMPT = """\
 （ここに英語本編を書く。上記の難易度指示に従うこと。関連記事の内容も自然に組み込むこと。3〜8分相当のテキスト量。）
 """
 
+_DIGEST_SCRIPT_PROMPT = """\
+あなたはポッドキャストの台本ライターです。複数の記事をまとめた日次ダイジェストの台本を作成してください。
+
+【対象記事】
+{articles_content}
+
+【難易度指示】
+{difficulty_instruction}
+
+【出力フォーマット（必ずこの形式で出力）】
+===JAPANESE_INTRO===
+（ここに日本語イントロを書く。日付「{date_str}」から始め、本日のダイジェスト概要を1〜3センテンスで紹介する。）
+
+===ENGLISH_BODY===
+（ここに英語本編を書く。上記の難易度指示に従うこと。複数の記事を coherent な流れで紹介する。5〜15分相当のテキスト量。）
+"""
+
 
 @dataclass
 class PodcastScript:
@@ -50,6 +67,30 @@ class PodcastScript:
 class ScriptGenerator:
     def __init__(self, gemini_client: GeminiClient | None = None) -> None:
         self._gemini = gemini_client or GeminiClient()
+
+    def _parse_script(self, raw: str) -> PodcastScript:
+        """生スクリプトから PodcastScript を解析する（抽出された純粋関数）。
+
+        ===JAPANESE_INTRO===...===ENGLISH_BODY===... の形式をパースする。
+        形式が無ければ logger.warning を出して body に生スクリプトを割り当てる。
+
+        Args:
+            raw: Gemini から返された生スクリプトテキスト
+
+        Returns:
+            PodcastScript
+        """
+        intro = ""
+        body = ""
+        if "===JAPANESE_INTRO===" in raw and "===ENGLISH_BODY===" in raw:
+            parts = raw.split("===ENGLISH_BODY===")
+            intro = parts[0].replace("===JAPANESE_INTRO===", "").strip()
+            body = parts[1].strip()
+        else:
+            logger.warning("Script format not found, using raw output as body")
+            body = raw
+
+        return PodcastScript(japanese_intro=intro, english_body=body)
 
     def generate(
         self,
@@ -71,15 +112,33 @@ class ScriptGenerator:
         )
 
         raw = self._gemini.generate_text(prompt, temperature=0.8)
+        return self._parse_script(raw)
 
-        intro = ""
-        body = ""
-        if "===JAPANESE_INTRO===" in raw and "===ENGLISH_BODY===" in raw:
-            parts = raw.split("===ENGLISH_BODY===")
-            intro = parts[0].replace("===JAPANESE_INTRO===", "").strip()
-            body = parts[1].strip()
-        else:
-            logger.warning("Script format not found, using raw output as body")
-            body = raw
+    def generate_digest(
+        self,
+        articles: list[Article],
+        difficulty: str,
+        date_str: str,
+    ) -> PodcastScript:
+        """複数記事をまとめた日次ダイジェスト台本を生成する。
 
-        return PodcastScript(japanese_intro=intro, english_body=body)
+        Args:
+            articles: ダイジェストに含める記事リスト
+            difficulty: 難易度（_DIFFICULTY_INSTRUCTIONS のキー）
+            date_str: 日付文字列（"YYYY-MM-DD"）
+
+        Returns:
+            PodcastScript
+        """
+        articles_content = "\n".join(
+            f"- {a.title}: {a.content[:500]}" for a in articles
+        )
+
+        prompt = _DIGEST_SCRIPT_PROMPT.format(
+            articles_content=articles_content,
+            difficulty_instruction=_DIFFICULTY_INSTRUCTIONS.get(difficulty, difficulty),
+            date_str=date_str,
+        )
+
+        raw = self._gemini.generate_text(prompt, temperature=0.8)
+        return self._parse_script(raw)
