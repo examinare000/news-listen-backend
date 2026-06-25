@@ -76,6 +76,11 @@ class FirestoreClient:
             {"dismissed_article_ids": firestore.ArrayUnion([article_id])}, merge=True
         )
 
+    def add_read_article(self, user_id: str, article_id: str) -> None:
+        self._db.collection("userPrefs").document(user_id).set(
+            {"read_article_ids": firestore.ArrayUnion([article_id])}, merge=True
+        )
+
     # ---------- Users ----------
 
     def get_user(self, username: str) -> User | None:
