@@ -35,11 +35,17 @@ def _build_user_podcast(
     audio_url: str,
     japanese_intro_text: str,
     duration_seconds: int,
+    status: str = "completed",
+    error_message: str | None = None,
 ) -> Podcast:
     """per-user Podcast を構築する。
 
     キャッシュヒット時・ミス生成後の両方で共通利用するヘルパー。
     audio_url は常に共有 blob パスを渡す（配信・署名付き URL 生成はそのまま動く）。
+
+    Args:
+        status: Podcast status（既定 "completed"）。partial_failed 等にも対応。
+        error_message: 一部失敗時のエラー文言（既定 None、status != "completed" 時に設定）。
     """
     return Podcast(
         id=str(uuid.uuid4()),
@@ -49,7 +55,8 @@ def _build_user_podcast(
         audio_url=audio_url,
         japanese_intro_text=japanese_intro_text,
         duration_seconds=duration_seconds,
-        status="completed",
+        status=status,
+        error_message=error_message,
         created_at=datetime.now(timezone.utc),
         user_id=user_id,
     )
@@ -63,26 +70,34 @@ def _persist_user_podcast(
     audio_url: str,
     japanese_intro_text: str,
     duration_seconds: int,
+    status: str = "completed",
+    error_message: str | None = None,
 ) -> str:
     """star 経由で作られた processing 行があれば promote、無ければ新規 save（後方互換）。
 
     WHY: star 起点の processing 行を重複させず同一 id で completed へ昇格。
     star 非経由トリガーは従来どおり新規保存（後方互換）。
     永続化した Podcast の id を返す（ログでの追跡用）。
+
+    Args:
+        status: Podcast status（既定 "completed"）。partial_failed 等にも対応。
+        error_message: 一部失敗時のエラー文言（既定 None）。
     """
     existing = db.get_user_podcast_for_article(user_id, article_id, difficulty)
     if existing is not None:
         db.promote_user_podcast(
             existing.id,
-            "completed",
+            status,
             audio_url=audio_url,
             japanese_intro_text=japanese_intro_text,
             duration_seconds=duration_seconds,
+            error_message=error_message,
         )
         return existing.id
     podcast = _build_user_podcast(
         user_id, article_id, difficulty,
         audio_url, japanese_intro_text, duration_seconds,
+        status=status, error_message=error_message,
     )
     db.save_podcast(podcast)
     return podcast.id
@@ -184,7 +199,8 @@ def main(notifier=None) -> None:
         logger.info("Generating podcast for: %s", article.title)
         try:
             script = script_gen.generate(article, related, difficulty, today)
-            audio_bytes = tts_gen.generate_audio(script)
+            result = tts_gen.generate_audio(script)
+            audio_bytes = result.audio
             audio_blob_path = storage.upload_cached_audio(ck, audio_bytes)
             duration = len(audio_bytes) // _PCM_BYTES_PER_SECOND
         except Exception as e:
@@ -208,22 +224,39 @@ def main(notifier=None) -> None:
                 db.promote_user_podcast(existing.id, "failed", error_message=str(e))
             continue
 
-        # 生成成功 → 永続化（生成フェーズの failed リカバリ対象外）
-        # completed を先に書く — 後発ジョブが cache hit パスで読めるようにするため。
-        # save_podcast 失敗時も completed は保持され、次回の cache hit (b) 経路で補完される。
-        completed_cache = PodcastCache(
-            cache_key=ck,
-            article_id=article_id,
-            difficulty=difficulty,
-            language=DEFAULT_PODCAST_LANGUAGE,
-            status="completed",
-            audio_url=audio_blob_path,
-            japanese_intro_text=script.japanese_intro,
-            duration_seconds=duration,
-            created_at=datetime.now(timezone.utc),
-        )
-        db.save_podcast_cache(completed_cache)
+        # TtsResult: failed_segments の有無で全成功／部分失敗を分岐する。
+        # 部分失敗でも成功分の音声は完成しているため、配信・通知は完了扱いで行う。
+        is_partial = bool(result.failed_segments)
 
+        # キャッシュ: 全成功は成果物を completed で共有キャッシュへ載せる。部分失敗は
+        # 欠落音声でクロスユーザーキャッシュを汚さないよう failed に留め、次回トリガーで
+        # 自己修復（再確保・再生成）させる。failed キャッシュは except 経路と同形で
+        # audio_url を持たせない（共有配布されるのは completed のみ）。
+        if is_partial:
+            cache = PodcastCache(
+                cache_key=ck,
+                article_id=article_id,
+                difficulty=difficulty,
+                language=DEFAULT_PODCAST_LANGUAGE,
+                status="failed",
+                created_at=datetime.now(timezone.utc),
+            )
+        else:
+            cache = PodcastCache(
+                cache_key=ck,
+                article_id=article_id,
+                difficulty=difficulty,
+                language=DEFAULT_PODCAST_LANGUAGE,
+                status="completed",
+                audio_url=audio_blob_path,
+                japanese_intro_text=script.japanese_intro,
+                duration_seconds=duration,
+                created_at=datetime.now(timezone.utc),
+            )
+        db.save_podcast_cache(cache)
+
+        # per-user Podcast: 部分失敗は partial_failed + error_message、全成功は completed。
+        # 成功分の音声 blob は両者とも参照する（partial でも再生可能）。
         podcast_id = _persist_user_podcast(
             db,
             user_id,
@@ -232,15 +265,26 @@ def main(notifier=None) -> None:
             audio_blob_path,
             script.japanese_intro,
             duration,
+            status="partial_failed" if is_partial else "completed",
+            error_message=result.error_message,
         )
-        logger.info("Saved podcast %s for article %s", podcast_id, article_id)
+        logger.info(
+            "Saved %spodcast %s for article %s",
+            "partial " if is_partial else "", podcast_id, article_id,
+        )
 
-        # 生成完了通知（送信失敗はジョブ成功に影響しない）
+        # 生成完了通知（送信失敗はジョブ成功に影響しない）。部分失敗時は文面で明示する。
+        if is_partial:
+            notify_title = "Podcast 生成完了（一部失敗）"
+            notify_body = f"記事のポッドキャストが生成されました（{difficulty}、一部セグメント失敗）"
+        else:
+            notify_title = "Podcast 生成完了"
+            notify_body = f"記事のポッドキャストが生成されました（{difficulty}）"
         try:
             notifier.notify_completion(
                 user_id,
-                title="Podcast 生成完了",
-                body=f"記事のポッドキャストが生成されました（{difficulty}）",
+                title=notify_title,
+                body=notify_body,
                 # url は Service Worker の notificationclick が遷移先に使う（未指定だと "/" 固定）。
                 data={"podcast_id": podcast_id, "article_id": article_id, "url": "/feed"},
             )

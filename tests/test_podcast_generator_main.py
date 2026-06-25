@@ -134,10 +134,16 @@ def mocks():
         db.get_user_podcast_for_article.return_value = None
         # WHY: promote_user_podcast は MagicMock のまま。各テストで動作検証可能。
 
+        from jobs.podcast_generator.tts_generator import TtsResult
+
         mock_script = PodcastScript(japanese_intro="生成イントロ", english_body="English body.")
         script_gen.generate.return_value = mock_script
         # _PCM_BYTES_PER_SECOND = 48_000 → 1 秒分の音声データ
-        tts_gen.generate_audio.return_value = b"x" * 48_000
+        tts_gen.generate_audio.return_value = TtsResult(
+            audio=b"x" * 48_000,
+            failed_segments=[],
+            error_message=None,
+        )
         storage.upload_cached_audio.return_value = AUDIO_BLOB
 
         import jobs.podcast_generator.main as m
@@ -356,7 +362,13 @@ def test_cache_miss_duration_calculated_from_audio_bytes(mocks):
 
     48_000 バイト / 48_000 = 1 秒。
     """
-    mocks["tts_gen"].generate_audio.return_value = b"x" * 48_000
+    from jobs.podcast_generator.tts_generator import TtsResult
+
+    mocks["tts_gen"].generate_audio.return_value = TtsResult(
+        audio=b"x" * 48_000,
+        failed_segments=[],
+        error_message=None,
+    )
 
     mocks["main"].main()
 
@@ -527,9 +539,11 @@ def test_generation_exception_continues_to_next_article(mocks):
 
 def test_tts_exception_saves_cache_as_failed(mocks):
     """TTS 生成が例外を送出した場合も podcastCache を status=failed で保存すること。"""
+    from jobs.podcast_generator.tts_generator import TtsGenerationError
+
     mocks["db"].get_podcast_cache.return_value = None
     mocks["db"].try_acquire_cache.return_value = True
-    mocks["tts_gen"].generate_audio.side_effect = Exception("TTS error")
+    mocks["tts_gen"].generate_audio.side_effect = TtsGenerationError("TTS error")
 
     mocks["main"].main()
 
@@ -903,3 +917,132 @@ def test_generation_success_notifier_exception_does_not_break_job(mocks):
 
     # save_podcast は呼ばれていること（ジョブは成功している）
     db.save_podcast.assert_called_once()
+
+
+# ──────────────────────────────────────────────
+# T12: partial_failed（一部失敗）
+# ──────────────────────────────────────────────
+
+
+def test_partial_failure_saves_partial_failed_podcast(mocks):
+    """一部セグメント失敗時、Podcast の status が partial_failed であること。"""
+    from jobs.podcast_generator.tts_generator import TtsResult
+
+    partial_result = TtsResult(
+        audio=b"x" * 48_000,  # 成功分音声（日本語のみ）
+        failed_segments=["english_body"],
+        error_message="TTS failed for segments: english_body",
+    )
+    mocks["tts_gen"].generate_audio.return_value = partial_result
+
+    mocks["main"].main()
+
+    saved_podcast = mocks["db"].save_podcast.call_args[0][0]
+    assert saved_podcast.status == "partial_failed"
+    assert "english_body" in saved_podcast.error_message
+
+
+def test_partial_failure_uploads_partial_audio(mocks):
+    """一部失敗でも upload_cached_audio が呼ばれること。"""
+    from jobs.podcast_generator.tts_generator import TtsResult
+
+    partial_result = TtsResult(
+        audio=b"x" * 48_000,
+        failed_segments=["english_body"],
+        error_message="TTS failed for segments: english_body",
+    )
+    mocks["tts_gen"].generate_audio.return_value = partial_result
+
+    mocks["main"].main()
+
+    mocks["storage"].upload_cached_audio.assert_called_once()
+
+
+def test_partial_failure_saves_failed_cache(mocks):
+    """一部失敗時、キャッシュは status=failed で保存されること。"""
+    from jobs.podcast_generator.tts_generator import TtsResult
+
+    partial_result = TtsResult(
+        audio=b"x" * 48_000,
+        failed_segments=["english_body"],
+        error_message="TTS failed for segments: english_body",
+    )
+    mocks["tts_gen"].generate_audio.return_value = partial_result
+
+    mocks["main"].main()
+
+    saved_cache = mocks["db"].save_podcast_cache.call_args[0][0]
+    assert saved_cache.status == "failed"
+
+
+def test_partial_failure_with_existing_processing_promotes_to_partial_failed(mocks):
+    """一部失敗時に既存 processing 行があれば、promote_user_podcast で partial_failed へ遷移。"""
+    from jobs.podcast_generator.tts_generator import TtsResult
+    from shared.models import Podcast
+
+    partial_result = TtsResult(
+        audio=b"x" * 48_000,
+        failed_segments=["english_body"],
+        error_message="TTS failed for segments: english_body",
+    )
+    mocks["tts_gen"].generate_audio.return_value = partial_result
+
+    # 既存 processing 行を返す
+    existing_podcast = Podcast(
+        id="existing-processing-id",
+        type="single",
+        article_ids=[ARTICLE_ID],
+        difficulty="toeic_900",
+        audio_url="",
+        japanese_intro_text="",
+        duration_seconds=0,
+        status="processing",
+        created_at=NOW,
+        user_id="user1",
+    )
+    mocks["db"].get_user_podcast_for_article.return_value = existing_podcast
+
+    mocks["main"].main()
+
+    # promote_user_podcast が partial_failed で呼ばれること
+    mocks["db"].promote_user_podcast.assert_called_once()
+    call_args = mocks["db"].promote_user_podcast.call_args
+    assert call_args[0][0] == "existing-processing-id"
+    assert call_args[0][1] == "partial_failed"
+    assert call_args[1]["error_message"] == "TTS failed for segments: english_body"
+
+
+def test_partial_failure_sends_notification(mocks):
+    """一部失敗でも notifier.notify_completion が呼ばれること。"""
+    from jobs.podcast_generator.tts_generator import TtsResult
+    from unittest.mock import MagicMock
+
+    partial_result = TtsResult(
+        audio=b"x" * 48_000,
+        failed_segments=["english_body"],
+        error_message="TTS failed for segments: english_body",
+    )
+    mocks["tts_gen"].generate_audio.return_value = partial_result
+
+    mock_notifier = MagicMock()
+    mocks["main"].main(notifier=mock_notifier)
+
+    mock_notifier.notify_completion.assert_called_once()
+
+
+def test_complete_success_saves_completed_podcast(mocks):
+    """全セグメント成功時、status が completed のまま保たれること（非回帰）。"""
+    from jobs.podcast_generator.tts_generator import TtsResult
+
+    complete_result = TtsResult(
+        audio=b"x" * 48_000,
+        failed_segments=[],
+        error_message=None,
+    )
+    mocks["tts_gen"].generate_audio.return_value = complete_result
+
+    mocks["main"].main()
+
+    saved_podcast = mocks["db"].save_podcast.call_args[0][0]
+    assert saved_podcast.status == "completed"
+    assert saved_podcast.error_message is None
