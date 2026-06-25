@@ -62,6 +62,42 @@ def mock_audit():
 
 
 @pytest.fixture
+def current_session():
+    """API テスト用の固定 Session（get_current_user override で使用）。
+
+    articles/settings エンドポイントで get_current_user を使用するため、
+    その override 用に Session オブジェクトを提供する。
+    """
+    from datetime import datetime, timezone
+    from shared.models import Session
+
+    return Session(
+        session_id="test-session-123",
+        user_id="user1",
+        username="testuser",
+        role="user",
+        created_at=datetime.now(timezone.utc),
+        expires_at=datetime.now(timezone.utc),
+    )
+
+
+@pytest.fixture
+def api_client_with_auth(api_client, current_session):
+    """get_current_user を override した api_client（articles/settings テスト用）。
+
+    api_client の dependency_overrides に get_current_user override を追加し、
+    認証が必要なエンドポイントでも 401 を返さないようにする。
+    """
+    from api.dependencies import get_current_user
+    import api.main as m
+
+    # dependency_overrides に get_current_user を追加
+    m.app.dependency_overrides[get_current_user] = lambda: current_session
+    yield api_client
+    # クリーンアップは api_client フィクスチャ内で行われるため、ここでは不要
+
+
+@pytest.fixture
 def podcast_generator_mocks():
     """podcast_generator/main.py テスト用の全外部依存モック。
 
@@ -134,6 +170,7 @@ def api_client(mock_db, mock_storage, mock_job_trigger, mock_audit):
             get_user_id,
             get_audit_logger,
         )
+
         importlib.reload(m)
         # lru_cache をバイパスして各テストに独立したモックを注入する
         m.app.dependency_overrides[get_firestore_client] = lambda: mock_db

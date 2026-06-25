@@ -1,7 +1,13 @@
 """GET/POST/DELETE /settings/sources ほか settings 系エンドポイント。"""
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 
-from api.dependencies import get_firestore_client, get_user_id
+from api.dependencies import (
+    get_firestore_client,
+    get_user_id,
+    get_current_user,
+    get_audit_logger,
+    get_client_ip,
+)
 from api.schemas import (
     FeaturedSiteResponse,
     FeaturedSitesResponse,
@@ -11,8 +17,9 @@ from api.schemas import (
     RssSourcesResponse,
     UpdatePreferencesRequest,
 )
+from api.audit import AuditLogger
 from shared.firestore_client import FirestoreClient
-from shared.models import RssSource
+from shared.models import RssSource, Session
 
 router = APIRouter()
 
@@ -29,9 +36,12 @@ def get_sources(
 @router.post("/settings/sources", response_model=RssSourcesResponse)
 def add_source(
     request: RssSourceRequest,
-    user_id: str = Depends(get_user_id),
+    http_request: Request,
+    current: Session = Depends(get_current_user),
     db: FirestoreClient = Depends(get_firestore_client),
+    audit_logger: AuditLogger = Depends(get_audit_logger),
 ):
+    user_id = current.user_id
     prefs = db.get_user_prefs(user_id)
 
     # HttpUrl を str に変換して比較・保存
@@ -49,15 +59,27 @@ def add_source(
         }
     )
     db.save_user_prefs(updated)
+
+    # 監査ログ記録（成功後）
+    audit_logger.record(
+        action="rss_source_add",
+        actor=current,
+        ip=get_client_ip(http_request),
+        details={"url": url_str, "name": request.name},
+    )
+
     return RssSourcesResponse(sources=[s.model_dump() for s in updated.rss_sources])
 
 
 @router.delete("/settings/sources")
 def remove_source(
     url: str,
-    user_id: str = Depends(get_user_id),
+    http_request: Request,
+    current: Session = Depends(get_current_user),
     db: FirestoreClient = Depends(get_firestore_client),
+    audit_logger: AuditLogger = Depends(get_audit_logger),
 ):
+    user_id = current.user_id
     prefs = db.get_user_prefs(user_id)
 
     new_sources = [s for s in prefs.rss_sources if s.url != url]
@@ -66,6 +88,15 @@ def remove_source(
 
     updated = prefs.model_copy(update={"rss_sources": new_sources})
     db.save_user_prefs(updated)
+
+    # 監査ログ記録（成功後）
+    audit_logger.record(
+        action="rss_source_remove",
+        actor=current,
+        ip=get_client_ip(http_request),
+        details={"url": url},
+    )
+
     return RssSourcesResponse(sources=[s.model_dump() for s in updated.rss_sources])
 
 
@@ -100,17 +131,28 @@ def get_onboarding_status(
 
 @router.post("/settings/onboarding/complete", response_model=OnboardingStatusResponse)
 def complete_onboarding(
-    user_id: str = Depends(get_user_id),
+    http_request: Request,
+    current: Session = Depends(get_current_user),
     db: FirestoreClient = Depends(get_firestore_client),
+    audit_logger: AuditLogger = Depends(get_audit_logger),
 ):
     """初回オンボーディング完了フラグを true 化する。
 
     add_source と同じく get→model_copy→save_user_prefs の全置換更新。
     save_user_prefs は merge なし .set() のため required な default_difficulty も保持される。
     """
+    user_id = current.user_id
     prefs = db.get_user_prefs(user_id)
     updated = prefs.model_copy(update={"onboarding_completed": True})
     db.save_user_prefs(updated)
+
+    # 監査ログ記録（成功後）。details は不要（シンプルなフラグ更新）
+    audit_logger.record(
+        action="onboarding_complete",
+        actor=current,
+        ip=get_client_ip(http_request),
+    )
+
     return OnboardingStatusResponse(onboarding_completed=updated.onboarding_completed)
 
 
@@ -132,17 +174,30 @@ def get_preferences(
 @router.put("/settings/preferences", response_model=PreferencesResponse)
 def update_preferences(
     request: UpdatePreferencesRequest,
-    user_id: str = Depends(get_user_id),
+    http_request: Request,
+    current: Session = Depends(get_current_user),
     db: FirestoreClient = Depends(get_firestore_client),
+    audit_logger: AuditLogger = Depends(get_audit_logger),
 ):
     """ユーザープリファレンスを部分更新。指定フィールドのみ変更（他は保持）。
 
     exclude_none=True で None フィールドをフィルタリングし、model_copy の update=
     に渡す（add_source / complete_onboarding と同じ全置換更新パターン）。
     """
+    user_id = current.user_id
     prefs = db.get_user_prefs(user_id)
     updated = prefs.model_copy(update=request.model_dump(exclude_none=True))
     db.save_user_prefs(updated)
+
+    # 監査ログ記録（成功後）。詳細には値を入れずフィールド名のみを記録
+    changed_fields = sorted(request.model_dump(exclude_none=True).keys())
+    audit_logger.record(
+        action="preferences_update",
+        actor=current,
+        ip=get_client_ip(http_request),
+        details={"fields": changed_fields},
+    )
+
     return PreferencesResponse(
         default_difficulty=updated.default_difficulty,
         default_playback_speed=updated.default_playback_speed,
