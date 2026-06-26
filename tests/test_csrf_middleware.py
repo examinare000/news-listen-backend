@@ -112,11 +112,14 @@ class TestCsrfConfig:
         env = {}
         config = build_csrf_config(env)
         assert config.enabled is False
-        # 未認証の事前認証エンドポイント（login + password reset）は CSRF 既定免除。
+        # 未認証の事前認証エンドポイント（login + password reset + passkey login系）は CSRF 既定免除。
+        # passkey login 系はセッション Cookie 未発行状態で呼ばれるため login と同様に免除する。
         assert config.exempt_paths == {
             "/auth/login",
             "/auth/password/forgot",
             "/auth/password/reset",
+            "/auth/passkey/login/options",
+            "/auth/passkey/login/verify",
         }
 
     def test_csrf_config_enabled_true(self):
@@ -186,6 +189,8 @@ class TestCsrfConfig:
             "/auth/login",
             "/auth/password/forgot",
             "/auth/password/reset",
+            "/auth/passkey/login/options",
+            "/auth/passkey/login/verify",
         }
         for value in ["   ", ",", " , "]:
             config = build_csrf_config({"CSRF_EXEMPT_PATHS": value})

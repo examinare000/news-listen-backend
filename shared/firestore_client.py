@@ -22,7 +22,7 @@ from shared.models import (
 )
 
 if TYPE_CHECKING:
-    from shared.models import PasswordResetToken
+    from shared.models import PasswordResetToken, WebAuthnChallenge, WebAuthnCredential
 
 
 class FirestoreClient:
@@ -835,5 +835,119 @@ class FirestoreClient:
             # 検証成功: used_at を now に更新
             transaction.update(ref, {"used_at": now})
             return True
+
+        return _consume(self._db.transaction())
+
+    # ---------- WebAuthn Credentials ----------
+
+    def save_credential(self, cred: "WebAuthnCredential") -> None:
+        """WebAuthn クレデンシャルを保存する（full replace）。
+
+        Firestore コレクション `credentials/{hash_token(cred.credential_id)}` に保存。
+        doc_id を SHA-256 ハッシュにすることで O(1) 直引きを可能にする。
+        """
+        from shared.security import hash_token
+
+        doc_id = hash_token(cred.credential_id)
+        data = cred.model_dump(mode="json")
+        self._db.collection("credentials").document(doc_id).set(data)
+
+    def get_credentials_by_user(self, user_id: str) -> "list[WebAuthnCredential]":
+        """指定ユーザーの WebAuthn クレデンシャル一覧を取得する。"""
+        from shared.models import WebAuthnCredential
+
+        docs = (
+            self._db.collection("credentials")
+            .where("user_id", "==", user_id)
+            .stream()
+        )
+        return [WebAuthnCredential(**doc.to_dict()) for doc in docs]
+
+    def get_credential_by_id(self, credential_id_b64url: str) -> "WebAuthnCredential | None":
+        """credential_id（base64url）から WebAuthn クレデンシャルを直引きする。"""
+        from shared.models import WebAuthnCredential
+        from shared.security import hash_token
+
+        doc_id = hash_token(credential_id_b64url)
+        doc = self._db.collection("credentials").document(doc_id).get()
+        if not doc.exists:
+            return None
+        return WebAuthnCredential(**doc.to_dict())
+
+    def update_sign_count(
+        self, credential_id_b64url: str, new_sign_count: int, last_used_at: datetime
+    ) -> None:
+        """sign_count と last_used_at を更新する（リプレイアタック対策カウンタ）。"""
+        from shared.security import hash_token
+
+        doc_id = hash_token(credential_id_b64url)
+        self._db.collection("credentials").document(doc_id).update(
+            {
+                "sign_count": new_sign_count,
+                "last_used_at": last_used_at.isoformat(),
+            }
+        )
+
+    def delete_credential(self, user_id: str, credential_id_b64url: str) -> None:
+        """WebAuthn クレデンシャルを削除する（所有権検証付き・冪等）。
+
+        指定ユーザーが所有するクレデンシャルのみを削除する。
+        ドキュメント不在でも例外を出さない。
+        """
+        from shared.security import hash_token
+
+        doc_id = hash_token(credential_id_b64url)
+        doc = self._db.collection("credentials").document(doc_id).get()
+        if doc.exists and doc.to_dict().get("user_id") == user_id:
+            self._db.collection("credentials").document(doc_id).delete()
+
+    # ---------- WebAuthn Challenges ----------
+
+    def save_challenge(self, challenge: "WebAuthnChallenge") -> None:
+        """WebAuthn チャレンジを保存する。
+
+        Firestore コレクション `webauthnChallenges/{challenge.challenge_id}` に保存。
+        """
+        data = challenge.model_dump(mode="json")
+        self._db.collection("webauthnChallenges").document(challenge.challenge_id).set(data)
+
+    def consume_challenge(
+        self, challenge_id: str, now: datetime
+    ) -> "WebAuthnChallenge | None":
+        """WebAuthn チャレンジをワンタイム消費する（トランザクション）。
+
+        有効なチャレンジは doc を削除して返す。
+        不在・期限切れは None を返す（期限切れの場合も doc を削除する）。
+
+        get_session と同様に Pydantic モデルを先に再構築して expires_at を datetime へ
+        強制変換してから比較する。save_challenge が model_dump(mode="json") で ISO 文字列を
+        保存するため、data.get("expires_at") を datetime と直接比較すると TypeError になる。
+
+        Args:
+            challenge_id: チャレンジドキュメント ID
+            now: 現在時刻（テスト容易性のため注入可能）
+        """
+        from shared.models import WebAuthnChallenge
+
+        ref = self._db.collection("webauthnChallenges").document(challenge_id)
+
+        @firestore.transactional
+        def _consume(transaction) -> "WebAuthnChallenge | None":
+            snapshot = ref.get(transaction=transaction)
+            if not snapshot.exists:
+                return None
+            data = snapshot.to_dict()
+            # Pydantic で先に構築し expires_at を datetime へ変換する（ISO 文字列対応）。
+            # 構築失敗は不正データとみなし doc を削除して None を返す。
+            try:
+                ch = WebAuthnChallenge(**{**data, "challenge_id": snapshot.id})
+            except Exception:
+                transaction.delete(ref)
+                return None
+            # 有効・期限切れいずれも doc は削除（ワンタイム性を確保）。
+            transaction.delete(ref)
+            if ch.expires_at <= now:
+                return None
+            return ch
 
         return _consume(self._db.transaction())
