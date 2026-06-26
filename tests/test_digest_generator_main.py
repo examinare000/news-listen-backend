@@ -579,7 +579,11 @@ def digest_mocks():
          patch("jobs.digest_generator.main.StorageClient") as MockStorage, \
          patch("shared.gemini_client.GeminiClient"), \
          patch("jobs.podcast_generator.script_generator.ScriptGenerator") as MockScriptGen, \
-         patch("jobs.podcast_generator.tts_generator.TtsGenerator") as MockTtsGen:
+         patch("jobs.podcast_generator.tts_generator.TtsGenerator") as MockTtsGen, \
+         patch("jobs.digest_generator.main.datetime") as MockDateTime:
+
+        # 実クロック依存を排除し、テストを実行日に対して決定的にする（NOW/TODAY 定数の意図）
+        MockDateTime.now.return_value = NOW
 
         db = MockDb.return_value
         storage = MockStorage.return_value
