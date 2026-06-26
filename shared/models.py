@@ -28,6 +28,9 @@ AuditAction = Literal[
     "storage_cleanup",
     "password_reset_requested",
     "password_reset_completed",
+    "passkey_register",
+    "passkey_used",
+    "passkey_removed",
 ]
 
 # クロスユーザーキャッシュのデフォルト言語。現状は固定値（言語切替 UI は未実装）。
@@ -206,6 +209,47 @@ class PushSubscription(BaseModel):
     p256dh: str
     auth: str
     platform: str = "webpush"
+    created_at: datetime
+
+
+class WebAuthnCredential(BaseModel):
+    """WebAuthn (Passkey) クレデンシャル。
+
+    Firestore コレクション `credentials/{doc_id}` に対応する。
+    doc_id は `hash_token(credential_id)` で O(1) 直引き可能にする。
+    - `credential_id`: base64url エンコードされたクレデンシャル ID。
+    - `public_key`: base64url エンコードされた公開鍵（API レスポンスには含めない）。
+    - `sign_count`: リプレイアタック検出用カウンタ（後退は拒否）。
+    - `transports`: 認証器が対応するトランスポート（"internal", "usb" 等）。
+    """
+
+    credential_id: str  # base64url
+    user_id: str
+    username: str
+    public_key: str  # base64url — API レスポンスに出さない
+    sign_count: int
+    transports: list[str]
+    aaguid: str | None = None
+    name: str | None = None
+    created_at: datetime
+    last_used_at: datetime | None = None
+
+
+class WebAuthnChallenge(BaseModel):
+    """WebAuthn チャレンジ（ワンタイム）。
+
+    Firestore コレクション `webauthnChallenges/{challenge_id}` に対応する。
+    challenge_id は `secrets.token_urlsafe(32)` で採番し、消費時にドキュメントを削除する。
+    - `type`: "registration" または "authentication"。
+    - `user_id`: registration 時はログインユーザーの user_id、authentication 時は None。
+    - `expires_at`: 有効期限（過ぎたら consume_challenge は None を返す）。
+    """
+
+    challenge_id: str
+    challenge: str  # base64url
+    user_id: str | None = None
+    type: Literal["registration", "authentication"]
+    expires_at: datetime
     created_at: datetime
 
 
