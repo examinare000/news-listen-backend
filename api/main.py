@@ -14,7 +14,7 @@ from api.cors_config import build_cors_options
 from api.middleware.csrf import CsrfMiddleware, build_csrf_config
 from api.middleware.security_headers import SecurityHeadersMiddleware, build_security_headers
 from api.ratelimit import rate_limit
-from api.routers import admin, articles, auth, feed, notifications, podcasts, settings
+from api.routers import admin, articles, auth, feed, notifications, passkey as _passkey_router, podcasts, settings
 
 _logger = logging.getLogger(__name__)
 
@@ -107,6 +107,12 @@ app.include_router(
 # 管理用 CRUD。専用 admin ロールは無く共有 X-API-Key で保護する（admin.py 冒頭コメント参照）。
 app.include_router(
     admin.router, prefix="", dependencies=[Security(verify_api_key), Depends(rate_limit("api"))]
+)
+
+# Passkey (WebAuthn/FIDO2) 認証。WEBAUTHN_RP_ID 未設定時はエンドポイントが 503 を返す（無効化）。
+# login系2本（login/options・login/verify）は CSRF 免除（build_csrf_config のデフォルト参照）。
+app.include_router(
+    _passkey_router.router, prefix="", dependencies=[Security(verify_api_key), Depends(rate_limit("api"))]
 )
 
 
