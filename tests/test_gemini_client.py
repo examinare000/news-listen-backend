@@ -48,6 +48,36 @@ def test_generate_text_with_usage_defaults_usage_metadata_to_zero_if_missing():
         assert result.cached_content_token_count == 0
 
 
+def test_generate_text_with_usage_coerces_none_token_counts_to_zero():
+    """usage_metadata は存在するが token_count 属性が None のとき 0 に安全化する。
+
+    WHY: google-genai はキャッシュ未使用時 cached_content_token_count を None で返す
+    ことがあり、呼び出し側の `cached_content_token_count > 0` 比較が
+    `'>' not supported between instances of 'NoneType' and 'int'` で失敗していた
+    （recommendation ジョブが実スコアリングできずフォールバックする原因）。
+    """
+    with patch("shared.gemini_client.genai.Client") as mock_client_class:
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+
+        mock_usage = MagicMock()
+        mock_usage.prompt_token_count = None
+        mock_usage.cached_content_token_count = None
+        mock_response = MagicMock()
+        mock_response.text = "Generated response"
+        mock_response.usage_metadata = mock_usage
+        mock_client.models.generate_content.return_value = mock_response
+
+        from shared.gemini_client import GeminiClient
+        client = GeminiClient(api_key="test-key")
+        result = client.generate_text_with_usage("Test prompt", temperature=0.7)
+
+        assert result.prompt_token_count == 0
+        assert result.cached_content_token_count == 0
+        # 比較演算が例外を出さないこと（回帰の核心）
+        assert (result.cached_content_token_count > 0) is False
+
+
 def test_generate_text_with_usage_with_cached_content_parameter():
     """generate_text_with_usage は cached_content パラメータを GenerateContentConfig に渡す"""
     with patch("shared.gemini_client.genai.Client") as mock_client_class:
