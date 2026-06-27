@@ -123,7 +123,15 @@ def build_csrf_config(env: Mapping[str, str]) -> CsrfConfig:
     #       エンドポイントで、リセットトークン自体が CSRF 相当の保護を担う。double-submit
     #       cookie を要求するとログアウト中のユーザーがリセットできなくなるため login と同様に免除する。
     if not exempt_paths:
-        exempt_paths = {"/auth/login", "/auth/password/forgot", "/auth/password/reset"}
+        # passkey login 系は未認証エンドポイント（セッション Cookie 未発行）のため login と同様に免除する。
+        # register/verify・credentials DELETE は認証済み CSRF 必須（免除しない）。
+        exempt_paths = {
+            "/auth/login",
+            "/auth/password/forgot",
+            "/auth/password/reset",
+            "/auth/passkey/login/options",
+            "/auth/passkey/login/verify",
+        }
 
     return CsrfConfig(enabled=enabled, exempt_paths=exempt_paths)
 
