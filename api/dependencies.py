@@ -163,3 +163,19 @@ def get_email_sender():
     from shared.email_sender import build_email_sender
 
     return build_email_sender(os.environ)
+
+
+@lru_cache(maxsize=1)
+def get_webauthn_config():
+    """WebAuthnConfig のシングルトンを返す。
+
+    WEBAUTHN_RP_ID が未設定の場合は None を返す。
+    passkey ルーターは None を受け取ったら 503 を返す。
+    lru_cache によりプロセス内で同一インスタンスを再利用し、
+    テストでは cache_clear() → dependency_overrides で差し替える。
+    """
+    import os
+
+    from shared.webauthn_config import WebAuthnConfig
+
+    return WebAuthnConfig.from_env(os.environ)
