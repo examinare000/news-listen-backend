@@ -80,13 +80,16 @@ class GeminiClient:
         )
 
         # WHY: usage_metadata が無いケース（例：SDK 構造変更）に対応し、
-        # AttributeError でクラッシュせず 0 で安全化
+        # AttributeError でクラッシュせず 0 で安全化。さらに google-genai は
+        # キャッシュ未使用時に *_token_count を None で返すため、属性が存在しても
+        # None なら 0 に畳み込む（`or 0`）。これを怠ると呼び出し側の
+        # `cached_content_token_count > 0` が None との比較で TypeError になる。
         prompt_token_count = 0
         cached_content_token_count = 0
         if response.usage_metadata is not None:
-            prompt_token_count = getattr(response.usage_metadata, "prompt_token_count", 0)
-            cached_content_token_count = getattr(
-                response.usage_metadata, "cached_content_token_count", 0
+            prompt_token_count = getattr(response.usage_metadata, "prompt_token_count", 0) or 0
+            cached_content_token_count = (
+                getattr(response.usage_metadata, "cached_content_token_count", 0) or 0
             )
 
         return TextGenerationResult(
