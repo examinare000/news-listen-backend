@@ -209,10 +209,11 @@ def api_client(mock_db, mock_storage, mock_job_trigger, mock_audit, mock_email_s
             auth,
             feed,
             notifications,
+            passkey as passkey_router,
             podcasts,
             settings as settings_router,
         )
-        for _router_mod in (admin, articles, auth, feed, notifications, podcasts, settings_router):
+        for _router_mod in (admin, articles, auth, feed, notifications, passkey_router, podcasts, settings_router):
             importlib.reload(_router_mod)
 
         import api.main as m
