@@ -41,7 +41,7 @@ JOB_DEBOUNCE_SECONDS: dict[str, int] = {
 
 
 class JobDispatcher(Protocol):
-    def dispatch(self, job_name: str) -> None: ...
+    def dispatch(self, job_name: str, user_id: str) -> None: ...
 
 
 class CloudRunJobDispatcher:
@@ -66,13 +66,22 @@ class CloudRunJobDispatcher:
             self._session = AuthorizedSession(credentials)
         return self._session
 
-    def dispatch(self, job_name: str) -> None:
+    def dispatch(self, job_name: str, user_id: str) -> None:
         session = self._ensure_session()
+        # 実行ごとに USER_ID を上書きするため per-execution overrides を使う。
+        # v1 jobs:run は overrides 非対応なので v2 RunJob を呼ぶ（#51）。
         url = (
-            f"https://{self._region}-run.googleapis.com/apis/run.googleapis.com/v1/"
-            f"namespaces/{self._project_id}/jobs/{job_name}:run"
+            f"https://{self._region}-run.googleapis.com/v2/"
+            f"projects/{self._project_id}/locations/{self._region}/jobs/{job_name}:run"
         )
-        resp = session.post(url, timeout=30)
+        body = {
+            "overrides": {
+                "containerOverrides": [
+                    {"env": [{"name": "USER_ID", "value": user_id}]}
+                ]
+            }
+        }
+        resp = session.post(url, json=body, timeout=30)
         if resp.status_code >= 400:
             # 2xx 以外は例外化し、JobTrigger 側のロギングに委ねる。
             raise RuntimeError(
@@ -89,13 +98,16 @@ class LocalProcessJobDispatcher:
         self._job_modules = JOB_MODULES if job_modules is None else job_modules
         self._popen = popen
 
-    def dispatch(self, job_name: str) -> None:
+    def dispatch(self, job_name: str, user_id: str) -> None:
         module = self._job_modules.get(job_name)
         if not module:
             raise ValueError(f"Unknown job name: {job_name}")
+        # 子プロセスに USER_ID を渡し、対象ユーザーのジョブとして実行させる（#51）。
+        # 親環境を引き継いだうえで上書きする（PATH 等が欠落すると起動できないため）。
+        env = {**os.environ, "USER_ID": user_id}
         # fire-and-forget。子プロセスの出力は親（api）のログにそのまま流す。
-        self._popen([sys.executable, "-m", module])
-        logger.info("Spawned local job process: %s (%s)", job_name, module)
+        self._popen([sys.executable, "-m", module], env=env)
+        logger.info("Spawned local job process: %s (%s) for %s", job_name, module, user_id)
 
 
 class JobTrigger:
@@ -120,7 +132,7 @@ class JobTrigger:
             logger.info("Skipped job (debounced): %s for %s", job_name, user_id)
             return False
         try:
-            self._dispatcher.dispatch(job_name)
+            self._dispatcher.dispatch(job_name, user_id)
             return True
         except Exception as e:
             # ジョブ起動の失敗は star/dismiss の成否に波及させない（ベストエフォート）。

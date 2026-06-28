@@ -27,7 +27,8 @@ def test_trigger_dispatches_when_lock_acquired():
     trigger = JobTrigger(dispatcher, lock, default_debounce=60)
 
     assert trigger.trigger("recommendation", "user1") is True
-    dispatcher.dispatch.assert_called_once_with("recommendation")
+    # user_id をディスパッチャまで伝播する（#51: ジョブが USER_ID を受け取れるように）
+    dispatcher.dispatch.assert_called_once_with("recommendation", "user1")
 
 
 def test_trigger_skips_when_lock_not_acquired():
@@ -74,16 +75,34 @@ def test_local_dispatcher_spawns_module_subprocess():
         job_modules={"recommendation": "jobs.recommendation.main"}, popen=popen
     )
 
-    dispatcher.dispatch("recommendation")
+    dispatcher.dispatch("recommendation", "user1")
 
     args = popen.call_args[0][0]
     assert args[1:] == ["-m", "jobs.recommendation.main"]
 
 
+def test_local_dispatcher_passes_user_id_via_env():
+    """#51: サブプロセスに USER_ID 環境変数を渡し、ジョブが対象ユーザーを特定できること。
+
+    従来は env を渡さず子プロセスが USER_ID を解決できなかった（KeyError / default 固定）。
+    """
+    popen = MagicMock()
+    dispatcher = LocalProcessJobDispatcher(
+        job_modules={"recommendation": "jobs.recommendation.main"}, popen=popen
+    )
+
+    dispatcher.dispatch("recommendation", "user42")
+
+    env = popen.call_args.kwargs["env"]
+    assert env["USER_ID"] == "user42"
+    # 既存の環境変数も引き継ぐこと（PATH 等が欠落すると子が起動できない）
+    assert "PATH" in env
+
+
 def test_local_dispatcher_rejects_unknown_job():
     dispatcher = LocalProcessJobDispatcher(job_modules={}, popen=MagicMock())
     with pytest.raises(ValueError):
-        dispatcher.dispatch("unknown-job")
+        dispatcher.dispatch("unknown-job", "user1")
 
 
 # ---------- CloudRunJobDispatcher ----------
@@ -95,13 +114,34 @@ def test_cloud_run_dispatcher_posts_to_jobs_run_endpoint():
         project_id="proj", region="asia-northeast1", session=session
     )
 
-    dispatcher.dispatch("podcast-generator")
+    dispatcher.dispatch("podcast-generator", "user1")
 
+    # 実行ごとに USER_ID を上書きするには per-execution overrides が必要。
+    # v1 jobs:run は overrides 非対応のため v2 RunJob を使う（#51）。
     url = session.post.call_args[0][0]
     assert url == (
-        "https://asia-northeast1-run.googleapis.com/apis/run.googleapis.com/v1/"
-        "namespaces/proj/jobs/podcast-generator:run"
+        "https://asia-northeast1-run.googleapis.com/v2/"
+        "projects/proj/locations/asia-northeast1/jobs/podcast-generator:run"
     )
+
+
+def test_cloud_run_dispatcher_includes_user_id_override():
+    """#51: Cloud Run 実行に USER_ID の containerOverrides を載せること。
+
+    ジョブのデプロイ時 env（既定 USER_ID）を実行ごとに上書きし、
+    star したユーザー本人のレコメンド/Podcast を生成できるようにする。
+    """
+    session = MagicMock()
+    session.post.return_value = MagicMock(status_code=200)
+    dispatcher = CloudRunJobDispatcher(
+        project_id="proj", region="asia-northeast1", session=session
+    )
+
+    dispatcher.dispatch("recommendation", "user42")
+
+    body = session.post.call_args.kwargs["json"]
+    env = body["overrides"]["containerOverrides"][0]["env"]
+    assert {"name": "USER_ID", "value": "user42"} in env
 
 
 def test_cloud_run_dispatcher_raises_on_error_status():
@@ -111,7 +151,7 @@ def test_cloud_run_dispatcher_raises_on_error_status():
         project_id="proj", region="asia-northeast1", session=session
     )
     with pytest.raises(RuntimeError):
-        dispatcher.dispatch("recommendation")
+        dispatcher.dispatch("recommendation", "user1")
 
 
 # ---------- build_job_trigger（ファクトリ） ----------
