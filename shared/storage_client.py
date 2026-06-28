@@ -10,6 +10,8 @@ from google.auth.transport.requests import Request as AuthRequest
 from google.cloud import storage
 from google.cloud.exceptions import NotFound
 
+from shared.audio import pcm_to_wav
+
 logger = logging.getLogger(__name__)
 
 
@@ -18,21 +20,25 @@ class StorageClient:
         self._client = storage.Client()
         self._bucket_name = os.environ["GCS_BUCKET_NAME"]
 
-    def upload_cached_audio(self, cache_key: str, audio_bytes: bytes) -> str:
+    def upload_cached_audio(self, cache_key: str, pcm_bytes: bytes) -> str:
         """共有キャッシュ用音声を Cloud Storage にアップロードし、GCS blob パスを返す。
 
-        決定論的パス podcasts/cache/{cache_key}.mp3 を使用するため、
+        入力は Gemini TTS が返す生 PCM（24kHz・モノラル・16bit）。生 PCM はヘッダを
+        持たず、従来 audio/mpeg として配信していたためクライアントで再生不可だった（#50）。
+        WAV コンテナ化したうえで content_type="audio/wav"・.wav 拡張子で配信する。
+
+        決定論的パス podcasts/cache/{cache_key}.wav を使用するため、
         複数ジョブが同一 cache_key でアップロードしても同一 blob に収束する（べき等）。
         make_public() は呼ばない — 共有キャッシュでも GCS オブジェクトを永続公開しない。
         アクセスは generate_audio_url() 経由の署名付き URL に限定する。
 
         Returns:
-            GCS blob パス（例: "podcasts/cache/{cache_key}.mp3"）
+            GCS blob パス（例: "podcasts/cache/{cache_key}.wav"）
         """
         bucket = self._client.bucket(self._bucket_name)
-        blob_name = f"podcasts/cache/{cache_key}.mp3"
+        blob_name = f"podcasts/cache/{cache_key}.wav"
         blob = bucket.blob(blob_name)
-        blob.upload_from_string(audio_bytes, content_type="audio/mpeg")
+        blob.upload_from_string(pcm_to_wav(pcm_bytes), content_type="audio/wav")
         return blob_name
 
     def generate_audio_url(self, blob_name: str, expiration_seconds: int = 3600) -> str:
