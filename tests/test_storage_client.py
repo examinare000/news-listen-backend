@@ -97,6 +97,46 @@ def test_generate_audio_url_fails_fast_when_credentials_cannot_sign():
         mock_blob.generate_signed_url.assert_not_called()
 
 
+# ---------- #50: upload_cached_audio は再生可能な WAV を配信する ----------
+
+
+def test_upload_cached_audio_wraps_pcm_as_wav():
+    """生 PCM を WAV コンテナ化し、audio/wav・.wav blob で配信すること（#50）。
+
+    従来は生 PCM を content_type="audio/mpeg"・.mp3 で配信していたため
+    プレイヤーがデコードできず再生不可だった。RIFF/WAVE ヘッダを付与し、
+    正しい MIME と拡張子で配信することを検証する。
+    """
+    import struct
+
+    with patch.dict("os.environ", {"GCS_BUCKET_NAME": "test-bucket"}), \
+         patch("shared.storage_client.storage.Client") as mock_client_class:
+
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+        mock_blob = MagicMock()
+        mock_client.bucket.return_value.blob.return_value = mock_blob
+
+        from shared.storage_client import StorageClient
+        client = StorageClient()
+
+        pcm = struct.pack("<100h", *range(100))
+        blob_name = client.upload_cached_audio("abc123", pcm)
+
+        # blob 名・戻り値は .wav 拡張子
+        assert blob_name == "podcasts/cache/abc123.wav"
+        mock_client.bucket.return_value.blob.assert_called_with(
+            "podcasts/cache/abc123.wav"
+        )
+
+        # アップロードは WAV バイト列・audio/wav で行われる
+        args, kwargs = mock_blob.upload_from_string.call_args
+        uploaded = args[0]
+        assert uploaded[:4] == b"RIFF"
+        assert uploaded[8:12] == b"WAVE"
+        assert kwargs["content_type"] == "audio/wav"
+
+
 # ---------- T1: get_blob_size / delete_blob ----------
 
 

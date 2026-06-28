@@ -2,12 +2,15 @@
 
 upload_cached_audio は共有キャッシュ用の音声をアップロードする。
 既存の upload_audio（per-user パス）と異なり、決定論的な共有パス
-podcasts/cache/{cache_key}.mp3 を使用する。
+podcasts/cache/{cache_key}.wav を使用する。
+
+入力は Gemini TTS の生 PCM。再生可能にするため WAV コンテナ化して
+audio/wav で配信する（#50）。
 """
 from unittest.mock import MagicMock, patch
 
 CACHE_KEY = "art1abc123456789ab__toeic_900__ja-en"
-EXPECTED_BLOB_NAME = f"podcasts/cache/{CACHE_KEY}.mp3"
+EXPECTED_BLOB_NAME = f"podcasts/cache/{CACHE_KEY}.wav"
 
 
 def test_upload_cached_audio_uses_deterministic_cache_path():
@@ -73,11 +76,14 @@ def test_upload_cached_audio_does_not_make_blob_public():
         mock_blob.make_public.assert_not_called()
 
 
-def test_upload_cached_audio_uses_audio_mpeg_content_type():
-    """upload_cached_audio は content_type='audio/mpeg' でアップロードすること。
+def test_upload_cached_audio_wraps_pcm_as_wav():
+    """upload_cached_audio は生 PCM を WAV 化し content_type='audio/wav' で配信すること。
 
-    upload_audio と同じ content_type を用いる。
+    従来は生 PCM を audio/mpeg として配信していたため再生不可だった（#50）。
+    RIFF/WAVE ヘッダを付与し、正しい MIME で配信することを検証する。
     """
+    import struct
+
     with patch.dict("os.environ", {"GCS_BUCKET_NAME": "test-bucket"}), \
          patch("shared.storage_client.storage.Client") as mock_client_class:
 
@@ -88,11 +94,14 @@ def test_upload_cached_audio_uses_audio_mpeg_content_type():
 
         from shared.storage_client import StorageClient
         client = StorageClient()
-        client.upload_cached_audio(CACHE_KEY, b"audio-bytes")
+        pcm = struct.pack("<50h", *range(50))
+        client.upload_cached_audio(CACHE_KEY, pcm)
 
-        mock_blob.upload_from_string.assert_called_once_with(
-            b"audio-bytes", content_type="audio/mpeg"
-        )
+        args, kwargs = mock_blob.upload_from_string.call_args
+        uploaded = args[0]
+        assert uploaded[:4] == b"RIFF"
+        assert uploaded[8:12] == b"WAVE"
+        assert kwargs["content_type"] == "audio/wav"
 
 
 def test_upload_cached_audio_path_differs_from_per_user_path():
