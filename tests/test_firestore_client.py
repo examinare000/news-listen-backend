@@ -349,6 +349,66 @@ def test_delete_push_subscription_noop_when_user_mismatch(mock_firestore_db):
     mock_doc_ref.delete.assert_not_called()
 
 
+def test_delete_apns_device_token_transactional_when_matches_user(mock_firestore_db):
+    """delete_apns_device_token がトランザクション内で所有者一致時に削除する。"""
+    from shared.firestore_client import FirestoreClient
+    client = FirestoreClient()
+
+    device_token = "a1b2c3d4" * 8
+    expected_doc_id = hashlib.sha256(device_token.encode()).hexdigest()
+
+    snapshot = MagicMock()
+    snapshot.exists = True
+    snapshot.to_dict.return_value = {"user_id": "user1", "device_token": device_token}
+    ref = MagicMock()
+    ref.get.return_value = snapshot
+    mock_firestore_db.collection.return_value.document.return_value = ref
+
+    with patch("shared.firestore_client.firestore.transactional", lambda f: f):
+        client.delete_apns_device_token("user1", device_token)
+
+    mock_firestore_db.collection.assert_called_with("apnsDeviceTokens")
+    mock_firestore_db.collection.return_value.document.assert_called_with(expected_doc_id)
+    # 所有権検証と削除はトランザクション経由で行う（読取り〜削除の競合を防ぐ）。
+    mock_firestore_db.transaction.return_value.delete.assert_called_once_with(ref)
+
+
+def test_delete_apns_device_token_noop_when_doc_missing(mock_firestore_db):
+    """doc 不在時はトランザクション削除を呼ばない（冪等）。"""
+    from shared.firestore_client import FirestoreClient
+    client = FirestoreClient()
+
+    snapshot = MagicMock()
+    snapshot.exists = False
+    ref = MagicMock()
+    ref.get.return_value = snapshot
+    mock_firestore_db.collection.return_value.document.return_value = ref
+
+    with patch("shared.firestore_client.firestore.transactional", lambda f: f):
+        client.delete_apns_device_token("user1", "a1b2c3d4" * 8)
+
+    mock_firestore_db.transaction.return_value.delete.assert_not_called()
+
+
+def test_delete_apns_device_token_noop_when_user_mismatch(mock_firestore_db):
+    """他ユーザー所有のトークンは削除しない（セキュリティ）。"""
+    from shared.firestore_client import FirestoreClient
+    client = FirestoreClient()
+
+    device_token = "a1b2c3d4" * 8
+    snapshot = MagicMock()
+    snapshot.exists = True
+    snapshot.to_dict.return_value = {"user_id": "user2", "device_token": device_token}
+    ref = MagicMock()
+    ref.get.return_value = snapshot
+    mock_firestore_db.collection.return_value.document.return_value = ref
+
+    with patch("shared.firestore_client.firestore.transactional", lambda f: f):
+        client.delete_apns_device_token("user1", device_token)
+
+    mock_firestore_db.transaction.return_value.delete.assert_not_called()
+
+
 def test_save_push_subscription_same_endpoint_twice_upserts(mock_firestore_db):
     """同じ endpoint を 2 回 save した場合、同じ doc-id で upsert される（重複なし）"""
     from shared.firestore_client import FirestoreClient

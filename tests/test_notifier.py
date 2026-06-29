@@ -7,8 +7,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from shared.models import PushSubscription
+from shared.models import ApnsDeviceToken, PushSubscription
 from shared.notifier import (
+    ApnsConfig,
+    ApnsNotifier,
+    CompositeNotifier,
     NoOpNotifier,
     VapidConfig,
     WebPushNotifier,
@@ -408,3 +411,386 @@ class TestBuildNotifier:
         }
         notifier = build_notifier(mock_db, env)
         assert isinstance(notifier, NoOpNotifier)
+
+    def test_build_notifier_with_apns_only_returns_apns_notifier(self):
+        """APNS 環境変数のみ設定なら ApnsNotifier を単独で返す"""
+        mock_db = MagicMock()
+        env = {
+            "APNS_PRIVATE_KEY": "dummy-p8-key-material",
+            "APNS_KEY_ID": "KEY123",
+            "APNS_TEAM_ID": "TEAM123",
+            "APNS_BUNDLE_ID": "com.example.app",
+        }
+        notifier = build_notifier(mock_db, env)
+        assert isinstance(notifier, ApnsNotifier)
+
+    def test_build_notifier_with_both_returns_composite(self):
+        """VAPID と APNS の両方が設定なら CompositeNotifier を返す"""
+        mock_db = MagicMock()
+        env = {
+            "VAPID_PRIVATE_KEY": "priv",
+            "VAPID_PUBLIC_KEY": "pub",
+            "VAPID_CLAIMS_EMAIL": "email@example.com",
+            "APNS_PRIVATE_KEY": "dummy-p8-key-material",
+            "APNS_KEY_ID": "KEY123",
+            "APNS_TEAM_ID": "TEAM123",
+            "APNS_BUNDLE_ID": "com.example.app",
+        }
+        notifier = build_notifier(mock_db, env)
+        assert isinstance(notifier, CompositeNotifier)
+        # ラッパー型だけでなく、両プロバイダが実際に束ねられていることを検証する
+        # （片方が build_notifier から脱落しても isinstance は通ってしまうため）。
+        assert len(notifier._notifiers) == 2
+        assert any(isinstance(n, WebPushNotifier) for n in notifier._notifiers)
+        assert any(isinstance(n, ApnsNotifier) for n in notifier._notifiers)
+
+
+# ---------- ApnsConfig ----------
+
+
+class TestApnsConfig:
+    def test_from_env_with_all_vars_returns_config(self):
+        """APNS_* が全て設定されていれば ApnsConfig を返す"""
+        env = {
+            "APNS_PRIVATE_KEY": "p8_contents",
+            "APNS_KEY_ID": "KEY123",
+            "APNS_TEAM_ID": "TEAM123",
+            "APNS_BUNDLE_ID": "com.example.app",
+        }
+        config = ApnsConfig.from_env(env)
+        assert config is not None
+        assert config.private_key == "p8_contents"
+        assert config.key_id == "KEY123"
+        assert config.team_id == "TEAM123"
+        assert config.bundle_id == "com.example.app"
+        # APNS_USE_SANDBOX 未指定なら本番扱い
+        assert config.use_sandbox is False
+
+    def test_from_env_with_sandbox_flag(self):
+        """APNS_USE_SANDBOX=true なら sandbox 扱い"""
+        env = {
+            "APNS_PRIVATE_KEY": "p8",
+            "APNS_KEY_ID": "K",
+            "APNS_TEAM_ID": "T",
+            "APNS_BUNDLE_ID": "b",
+            "APNS_USE_SANDBOX": "true",
+        }
+        config = ApnsConfig.from_env(env)
+        assert config is not None
+        assert config.use_sandbox is True
+
+    def test_from_env_with_missing_vars_returns_none(self):
+        """APNS_* が不足していれば None を返す"""
+        env = {
+            "APNS_PRIVATE_KEY": "p8",
+            "APNS_KEY_ID": "K",
+            # TEAM / BUNDLE 欠落
+        }
+        assert ApnsConfig.from_env(env) is None
+
+    def test_from_env_empty_returns_none(self):
+        assert ApnsConfig.from_env({}) is None
+
+
+# ---------- ApnsNotifier ----------
+
+
+def _apns_config(use_sandbox: bool = False) -> ApnsConfig:
+    return ApnsConfig(
+        private_key="p8_contents",
+        key_id="KEY123",
+        team_id="TEAM123",
+        bundle_id="com.example.app",
+        use_sandbox=use_sandbox,
+    )
+
+
+def _apns_token(token: str = "devicetoken123", user_id: str = "user1") -> ApnsDeviceToken:
+    return ApnsDeviceToken(
+        user_id=user_id,
+        device_token=token,
+        created_at=NOW,
+    )
+
+
+class _FakeResponse:
+    def __init__(self, status_code: int, payload: dict | None = None):
+        self.status_code = status_code
+        self._payload = payload or {}
+
+    def json(self):
+        return self._payload
+
+
+class TestApnsNotifier:
+    def test_no_op_when_no_tokens(self):
+        """デバイストークンが無ければ HTTP 送信しない"""
+        mock_db = MagicMock()
+        mock_db.get_apns_device_tokens.return_value = []
+        http = MagicMock()
+        notifier = ApnsNotifier(
+            db=mock_db, config=_apns_config(),
+            http_post_fn=http, token_provider=lambda: "jwt",
+        )
+
+        notifier.notify_completion("user1", title="T", body="B")
+
+        mock_db.get_apns_device_tokens.assert_called_once_with("user1")
+        http.assert_not_called()
+
+    def test_sends_once_per_token(self):
+        """トークン数分だけ送信する"""
+        mock_db = MagicMock()
+        mock_db.get_apns_device_tokens.return_value = [_apns_token("t1"), _apns_token("t2")]
+        http = MagicMock(return_value=_FakeResponse(200))
+        notifier = ApnsNotifier(
+            db=mock_db, config=_apns_config(),
+            http_post_fn=http, token_provider=lambda: "jwt",
+        )
+
+        notifier.notify_completion("user1", title="T", body="B")
+
+        assert http.call_count == 2
+
+    def test_request_has_correct_url_headers_and_payload(self):
+        """URL・authorization・apns-topic・aps ペイロードが正しい"""
+        mock_db = MagicMock()
+        mock_db.get_apns_device_tokens.return_value = [_apns_token("devtok")]
+        captured = {}
+
+        def fake_post(url, headers, payload):
+            captured["url"] = url
+            captured["headers"] = headers
+            captured["payload"] = payload
+            return _FakeResponse(200)
+
+        notifier = ApnsNotifier(
+            db=mock_db, config=_apns_config(),
+            http_post_fn=fake_post, token_provider=lambda: "the-jwt",
+        )
+
+        notifier.notify_completion(
+            "user1", title="完了", body="生成しました",
+            data={"podcast_id": "pod1"},
+        )
+
+        assert captured["url"].endswith("/3/device/devtok")
+        assert captured["url"].startswith("https://api.push.apple.com")
+        assert captured["headers"]["authorization"] == "bearer the-jwt"
+        assert captured["headers"]["apns-topic"] == "com.example.app"
+        # alert 通知であることを示すヘッダ。回帰すると配信が壊れるため明示検証する。
+        assert captured["headers"]["apns-push-type"] == "alert"
+        import json
+        body = json.loads(captured["payload"])
+        assert body["aps"]["alert"]["title"] == "完了"
+        assert body["aps"]["alert"]["body"] == "生成しました"
+        assert body["podcast_id"] == "pod1"
+
+    def test_uses_sandbox_host_when_configured(self):
+        """sandbox 設定時は sandbox ホストへ送る"""
+        mock_db = MagicMock()
+        mock_db.get_apns_device_tokens.return_value = [_apns_token("devtok")]
+        captured = {}
+
+        def fake_post(url, headers, payload):
+            captured["url"] = url
+            return _FakeResponse(200)
+
+        notifier = ApnsNotifier(
+            db=mock_db, config=_apns_config(use_sandbox=True),
+            http_post_fn=fake_post, token_provider=lambda: "jwt",
+        )
+
+        notifier.notify_completion("user1", title="T", body="B")
+
+        assert captured["url"].startswith("https://api.sandbox.push.apple.com")
+
+    def test_410_deletes_token(self):
+        """410 応答なら失効トークンを削除する"""
+        mock_db = MagicMock()
+        mock_db.get_apns_device_tokens.return_value = [_apns_token("expired")]
+        http = MagicMock(return_value=_FakeResponse(410, {"reason": "Unregistered"}))
+        notifier = ApnsNotifier(
+            db=mock_db, config=_apns_config(),
+            http_post_fn=http, token_provider=lambda: "jwt",
+        )
+
+        notifier.notify_completion("user1", title="T", body="B")
+
+        mock_db.delete_apns_device_token.assert_called_once_with("user1", "expired")
+
+    def test_bad_device_token_deletes_token(self):
+        """400 BadDeviceToken なら失効トークンを削除する"""
+        mock_db = MagicMock()
+        mock_db.get_apns_device_tokens.return_value = [_apns_token("bad")]
+        http = MagicMock(return_value=_FakeResponse(400, {"reason": "BadDeviceToken"}))
+        notifier = ApnsNotifier(
+            db=mock_db, config=_apns_config(),
+            http_post_fn=http, token_provider=lambda: "jwt",
+        )
+
+        notifier.notify_completion("user1", title="T", body="B")
+
+        mock_db.delete_apns_device_token.assert_called_once_with("user1", "bad")
+
+    def test_other_error_does_not_delete_token(self):
+        """その他のエラー(例: 503)は削除せず継続する"""
+        mock_db = MagicMock()
+        mock_db.get_apns_device_tokens.return_value = [_apns_token("t1"), _apns_token("t2")]
+        http = MagicMock(return_value=_FakeResponse(503, {"reason": "ServiceUnavailable"}))
+        notifier = ApnsNotifier(
+            db=mock_db, config=_apns_config(),
+            http_post_fn=http, token_provider=lambda: "jwt",
+        )
+
+        notifier.notify_completion("user1", title="T", body="B")
+
+        mock_db.delete_apns_device_token.assert_not_called()
+        assert http.call_count == 2
+
+    def test_exception_is_non_fatal_and_continues(self):
+        """送信例外は握り潰し、他トークンの処理を続ける"""
+        mock_db = MagicMock()
+        mock_db.get_apns_device_tokens.return_value = [_apns_token("t1"), _apns_token("t2")]
+        http = MagicMock(side_effect=[Exception("network"), _FakeResponse(200)])
+        notifier = ApnsNotifier(
+            db=mock_db, config=_apns_config(),
+            http_post_fn=http, token_provider=lambda: "jwt",
+        )
+
+        # 例外を出さずに完了する
+        notifier.notify_completion("user1", title="T", body="B")
+
+        assert http.call_count == 2
+
+    def test_none_status_is_treated_as_failure_not_success(self):
+        """status_code が取得できない応答は成功扱いせず削除もしない（可視化）。"""
+        mock_db = MagicMock()
+        mock_db.get_apns_device_tokens.return_value = [_apns_token("t1")]
+
+        class _NoStatus:
+            def json(self):
+                return {}
+
+        http = MagicMock(return_value=_NoStatus())
+        notifier = ApnsNotifier(
+            db=mock_db, config=_apns_config(),
+            http_post_fn=http, token_provider=lambda: "jwt",
+        )
+
+        notifier.notify_completion("user1", title="T", body="B")
+
+        mock_db.delete_apns_device_token.assert_not_called()
+
+    def test_auth_token_failure_is_non_fatal(self):
+        """JWT 署名失敗（不正な .p8 等）は例外を投げず no-op で終わる（非致命契約）。"""
+        mock_db = MagicMock()
+        mock_db.get_apns_device_tokens.return_value = [_apns_token("t1")]
+        http = MagicMock()
+
+        def boom():
+            raise ValueError("invalid key")
+
+        notifier = ApnsNotifier(
+            db=mock_db, config=_apns_config(),
+            http_post_fn=http, token_provider=boom,
+        )
+
+        # 例外を出さずに完了し、送信もしない。
+        notifier.notify_completion("user1", title="T", body="B")
+        http.assert_not_called()
+
+
+# ---------- ApnsNotifier 本番 JWT 署名・キャッシュ経路（注入なし） ----------
+
+
+def _ec_p256_private_key_pem() -> str:
+    """テスト用に本物の P-256 秘密鍵を PEM(.p8 相当) で生成する。"""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    return key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ).decode()
+
+
+class TestApnsAuthTokenSigning:
+    def test_real_es256_token_has_expected_header_and_claims(self):
+        """token_provider 無しの本番経路で ES256/kid/iss/iat を持つ JWT を生成する。"""
+        import jwt
+
+        config = ApnsConfig(
+            private_key=_ec_p256_private_key_pem(),
+            key_id="KEY123",
+            team_id="TEAM123",
+            bundle_id="com.example.app",
+            use_sandbox=False,
+        )
+        notifier = ApnsNotifier(db=MagicMock(), config=config, now_fn=lambda: NOW)
+
+        token = notifier._auth_token()
+
+        header = jwt.get_unverified_header(token)
+        assert header["alg"] == "ES256"
+        assert header["kid"] == "KEY123"
+        claims = jwt.decode(token, options={"verify_signature": False})
+        assert claims["iss"] == "TEAM123"
+        assert claims["iat"] == int(NOW.timestamp())
+
+    def test_token_is_cached_within_ttl(self):
+        """TTL 内の再取得は同一トークンを返す（再署名しない）。"""
+        config = ApnsConfig(
+            private_key=_ec_p256_private_key_pem(),
+            key_id="K", team_id="T", bundle_id="b", use_sandbox=False,
+        )
+        notifier = ApnsNotifier(db=MagicMock(), config=config, now_fn=lambda: NOW)
+
+        first = notifier._auth_token()
+        second = notifier._auth_token()
+        assert first == second
+
+    def test_token_is_regenerated_after_ttl(self):
+        """TTL を超えると新しいトークンを生成する。"""
+        from datetime import timedelta
+
+        config = ApnsConfig(
+            private_key=_ec_p256_private_key_pem(),
+            key_id="K", team_id="T", bundle_id="b", use_sandbox=False,
+        )
+        times = [NOW, NOW + timedelta(hours=2)]
+        notifier = ApnsNotifier(db=MagicMock(), config=config, now_fn=lambda: times.pop(0))
+
+        first = notifier._auth_token()
+        second = notifier._auth_token()
+        assert first != second
+
+
+# ---------- CompositeNotifier ----------
+
+
+class TestCompositeNotifier:
+    def test_calls_all_notifiers(self):
+        """全ての notifier を呼ぶ"""
+        n1 = MagicMock()
+        n2 = MagicMock()
+        composite = CompositeNotifier([n1, n2])
+
+        composite.notify_completion("user1", title="T", body="B", data={"k": "v"})
+
+        n1.notify_completion.assert_called_once_with("user1", title="T", body="B", data={"k": "v"})
+        n2.notify_completion.assert_called_once_with("user1", title="T", body="B", data={"k": "v"})
+
+    def test_one_failure_does_not_stop_others(self):
+        """1つが例外でも他の notifier は呼ばれる"""
+        n1 = MagicMock()
+        n1.notify_completion.side_effect = Exception("boom")
+        n2 = MagicMock()
+        composite = CompositeNotifier([n1, n2])
+
+        # 例外を出さずに完了する
+        composite.notify_completion("user1", title="T", body="B")
+
+        n2.notify_completion.assert_called_once()

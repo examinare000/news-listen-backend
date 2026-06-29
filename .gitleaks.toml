@@ -1,0 +1,10 @@
+# gitleaks 設定。既定ルールを継承しつつ、通知テストのダミー鍵フィクスチャを許可する。
+# tests/test_notifier.py の APNS_PRIVATE_KEY 等はプレースホルダ（Notifier の真偽値判定用）であり、
+# 実鍵はテスト実行時にメモリ上で生成してコミットしない。
+# CI の gitleaks(8.24.x) では単数形 [allowlist] のみ extend 時に確実にマージされるため単数形で記述する。
+[extend]
+useDefault = true
+
+[allowlist]
+description = "通知テストのダミー鍵フィクスチャ（実鍵ではない）を許可する"
+paths = ['''tests/test_notifier\.py''']

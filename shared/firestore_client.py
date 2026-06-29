@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 from google.cloud import firestore
 
 from shared.models import (
+    ApnsDeviceToken,
     Article,
     AuditLog,
     FeaturedSite,
@@ -772,6 +773,49 @@ class FirestoreClient:
         doc = self._db.collection("pushSubscriptions").document(doc_id).get()
         if doc.exists and doc.to_dict().get("user_id") == user_id:
             self._db.collection("pushSubscriptions").document(doc_id).delete()
+
+    # ---------- APNs Device Tokens ----------
+
+    def _apns_token_doc_id(self, device_token: str) -> str:
+        """device_token の SHA-256 ハッシュを doc-id として使う（冪等 upsert）。"""
+        return hashlib.sha256(device_token.encode()).hexdigest()
+
+    def save_apns_device_token(self, token: ApnsDeviceToken) -> None:
+        """APNs デバイストークンを保存する（冪等）。
+
+        同じ device_token を複数回 save した場合、同じ doc-id で上書き（upsert）される。
+        """
+        doc_id = self._apns_token_doc_id(token.device_token)
+        data = token.model_dump(mode="json")
+        self._db.collection("apnsDeviceTokens").document(doc_id).set(data, merge=True)
+
+    def get_apns_device_tokens(self, user_id: str) -> list[ApnsDeviceToken]:
+        """指定ユーザーの APNs デバイストークン一覧を取得する。"""
+        docs = (
+            self._db.collection("apnsDeviceTokens")
+            .where("user_id", "==", user_id)
+            .stream()
+        )
+        return [ApnsDeviceToken(**doc.to_dict()) for doc in docs]
+
+    def delete_apns_device_token(self, user_id: str, device_token: str) -> None:
+        """APNs デバイストークンを削除する（冪等・所有権検証付き）。
+
+        指定ユーザーが所有するトークンのみを削除する（他ユーザーのデータを削除できない）。
+        ドキュメント不在でも例外を出さない。
+
+        doc-id はグローバル（`sha256(device_token)`）のため、所有権検証と削除を
+        トランザクション内で行い、読取り〜削除間の再登録で別ユーザーの doc を消す競合を防ぐ。
+        """
+        ref = self._db.collection("apnsDeviceTokens").document(self._apns_token_doc_id(device_token))
+
+        @firestore.transactional
+        def _delete(transaction) -> None:
+            snapshot = ref.get(transaction=transaction)
+            if snapshot.exists and snapshot.to_dict().get("user_id") == user_id:
+                transaction.delete(ref)
+
+        _delete(self._db.transaction())
 
     # ---------- Password Reset Tokens ----------
 

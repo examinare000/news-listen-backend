@@ -11,11 +11,11 @@ import os
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from api.dependencies import get_firestore_client, get_user_id
 from shared.firestore_client import FirestoreClient
-from shared.models import PushSubscription
+from shared.models import ApnsDeviceToken, PushSubscription
 from shared.notifier import VapidConfig
 
 logger = logging.getLogger(__name__)
@@ -32,6 +32,12 @@ class _SubscribeRequest(BaseModel):
     endpoint: str
     keys: _PushSubscriptionKeys
     expirationTime: str | None = None  # W3C 仕様に合わせて受け取るが無視する
+
+
+class _DeviceTokenRequest(BaseModel):
+    # APNs デバイストークンは 16 進文字列。登録時に形式を検証して、URL パス（/3/device/<token>）への
+    # 不正文字混入（パストラバーサル・クエリ注入）やゴミ値の保存を入口で弾く。
+    device_token: str = Field(min_length=64, max_length=200, pattern=r"^[0-9a-fA-F]+$")
 
 
 @router.get("/vapid-public-key")
@@ -76,3 +82,38 @@ def unsubscribe(
     """
     db.delete_push_subscription(user_id, endpoint)
     return {"status": "unsubscribed"}
+
+
+@router.post("/device-tokens", status_code=status.HTTP_201_CREATED)
+def register_device_token(
+    body: _DeviceTokenRequest,
+    user_id: str = Depends(get_user_id),
+    db: FirestoreClient = Depends(get_firestore_client),
+):
+    """iOS APNs デバイストークンを登録する（冪等: 同一 token は upsert）。"""
+    token = ApnsDeviceToken(
+        user_id=user_id,
+        device_token=body.device_token,
+        created_at=datetime.now(timezone.utc),
+    )
+    db.save_apns_device_token(token)
+    return {"status": "registered"}
+
+
+@router.delete("/device-tokens")
+def unregister_device_token(
+    # 登録(register)と同じ 16 進制約を課し、空・空白・過大・非hex を 422 で弾く
+    # （doc-id 生成・将来の URL 利用前に入口で正規化済みの値だけを通す）。
+    token: str = Query(
+        ..., min_length=64, max_length=200, pattern=r"^[0-9a-fA-F]+$",
+        description="解除する APNs デバイストークン（16 進文字列）",
+    ),
+    user_id: str = Depends(get_user_id),
+    db: FirestoreClient = Depends(get_firestore_client),
+):
+    """iOS APNs デバイストークンを解除する（冪等: 不在でも 200）。
+
+    token はクエリパラメータで渡す（既存 DELETE /notifications/subscriptions?endpoint= と同じ規約）。
+    """
+    db.delete_apns_device_token(user_id, token)
+    return {"status": "unregistered"}

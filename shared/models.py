@@ -212,6 +212,19 @@ class PushSubscription(BaseModel):
     created_at: datetime
 
 
+class ApnsDeviceToken(BaseModel):
+    """iOS APNs デバイストークン（issue #80）。
+
+    Firestore コレクション `apnsDeviceTokens/{doc_id}` に対応する。
+    doc_id は device_token の SHA-256 ハッシュ（冪等 upsert のため）。
+    Web Push の `PushSubscription` とは別コレクションで管理し、関心を分離する。
+    """
+
+    user_id: str
+    device_token: str
+    created_at: datetime
+
+
 class WebAuthnCredential(BaseModel):
     """WebAuthn (Passkey) クレデンシャル。
 
