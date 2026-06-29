@@ -438,6 +438,11 @@ class TestBuildNotifier:
         }
         notifier = build_notifier(mock_db, env)
         assert isinstance(notifier, CompositeNotifier)
+        # ラッパー型だけでなく、両プロバイダが実際に束ねられていることを検証する
+        # （片方が build_notifier から脱落しても isinstance は通ってしまうため）。
+        assert len(notifier._notifiers) == 2
+        assert any(isinstance(n, WebPushNotifier) for n in notifier._notifiers)
+        assert any(isinstance(n, ApnsNotifier) for n in notifier._notifiers)
 
 
 # ---------- ApnsConfig ----------
@@ -573,6 +578,8 @@ class TestApnsNotifier:
         assert captured["url"].startswith("https://api.push.apple.com")
         assert captured["headers"]["authorization"] == "bearer the-jwt"
         assert captured["headers"]["apns-topic"] == "com.example.app"
+        # alert 通知であることを示すヘッダ。回帰すると配信が壊れるため明示検証する。
+        assert captured["headers"]["apns-push-type"] == "alert"
         import json
         body = json.loads(captured["payload"])
         assert body["aps"]["alert"]["title"] == "完了"
