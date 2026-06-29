@@ -504,7 +504,6 @@ def _apns_token(token: str = "devicetoken123", user_id: str = "user1") -> ApnsDe
     return ApnsDeviceToken(
         user_id=user_id,
         device_token=token,
-        bundle_id="com.example.app",
         created_at=NOW,
     )
 
@@ -656,6 +655,110 @@ class TestApnsNotifier:
         notifier.notify_completion("user1", title="T", body="B")
 
         assert http.call_count == 2
+
+    def test_none_status_is_treated_as_failure_not_success(self):
+        """status_code が取得できない応答は成功扱いせず削除もしない（可視化）。"""
+        mock_db = MagicMock()
+        mock_db.get_apns_device_tokens.return_value = [_apns_token("t1")]
+
+        class _NoStatus:
+            def json(self):
+                return {}
+
+        http = MagicMock(return_value=_NoStatus())
+        notifier = ApnsNotifier(
+            db=mock_db, config=_apns_config(),
+            http_post_fn=http, token_provider=lambda: "jwt",
+        )
+
+        notifier.notify_completion("user1", title="T", body="B")
+
+        mock_db.delete_apns_device_token.assert_not_called()
+
+    def test_auth_token_failure_is_non_fatal(self):
+        """JWT 署名失敗（不正な .p8 等）は例外を投げず no-op で終わる（非致命契約）。"""
+        mock_db = MagicMock()
+        mock_db.get_apns_device_tokens.return_value = [_apns_token("t1")]
+        http = MagicMock()
+
+        def boom():
+            raise ValueError("invalid key")
+
+        notifier = ApnsNotifier(
+            db=mock_db, config=_apns_config(),
+            http_post_fn=http, token_provider=boom,
+        )
+
+        # 例外を出さずに完了し、送信もしない。
+        notifier.notify_completion("user1", title="T", body="B")
+        http.assert_not_called()
+
+
+# ---------- ApnsNotifier 本番 JWT 署名・キャッシュ経路（注入なし） ----------
+
+
+def _ec_p256_private_key_pem() -> str:
+    """テスト用に本物の P-256 秘密鍵を PEM(.p8 相当) で生成する。"""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    return key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ).decode()
+
+
+class TestApnsAuthTokenSigning:
+    def test_real_es256_token_has_expected_header_and_claims(self):
+        """token_provider 無しの本番経路で ES256/kid/iss/iat を持つ JWT を生成する。"""
+        import jwt
+
+        config = ApnsConfig(
+            private_key=_ec_p256_private_key_pem(),
+            key_id="KEY123",
+            team_id="TEAM123",
+            bundle_id="com.example.app",
+            use_sandbox=False,
+        )
+        notifier = ApnsNotifier(db=MagicMock(), config=config, now_fn=lambda: NOW)
+
+        token = notifier._auth_token()
+
+        header = jwt.get_unverified_header(token)
+        assert header["alg"] == "ES256"
+        assert header["kid"] == "KEY123"
+        claims = jwt.decode(token, options={"verify_signature": False})
+        assert claims["iss"] == "TEAM123"
+        assert claims["iat"] == int(NOW.timestamp())
+
+    def test_token_is_cached_within_ttl(self):
+        """TTL 内の再取得は同一トークンを返す（再署名しない）。"""
+        config = ApnsConfig(
+            private_key=_ec_p256_private_key_pem(),
+            key_id="K", team_id="T", bundle_id="b", use_sandbox=False,
+        )
+        notifier = ApnsNotifier(db=MagicMock(), config=config, now_fn=lambda: NOW)
+
+        first = notifier._auth_token()
+        second = notifier._auth_token()
+        assert first == second
+
+    def test_token_is_regenerated_after_ttl(self):
+        """TTL を超えると新しいトークンを生成する。"""
+        from datetime import timedelta
+
+        config = ApnsConfig(
+            private_key=_ec_p256_private_key_pem(),
+            key_id="K", team_id="T", bundle_id="b", use_sandbox=False,
+        )
+        times = [NOW, NOW + timedelta(hours=2)]
+        notifier = ApnsNotifier(db=MagicMock(), config=config, now_fn=lambda: times.pop(0))
+
+        first = notifier._auth_token()
+        second = notifier._auth_token()
+        assert first != second
 
 
 # ---------- CompositeNotifier ----------

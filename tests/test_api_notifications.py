@@ -116,11 +116,15 @@ def test_notifications_endpoints_require_authentication():
     assert response.status_code == 401
 
 
+# APNs デバイストークンは 16 進文字列（64〜200 桁）。テストでは 64 桁の有効値を使う。
+VALID_DEVICE_TOKEN = "a1b2c3d4" * 8
+
+
 def test_post_device_tokens_returns_201_registered(api_client, mock_db):
     """POST /notifications/device-tokens は 201 で {"status": "registered"} を返す"""
     mock_db.save_apns_device_token = MagicMock()
 
-    body = {"device_token": "abc123devicetoken"}
+    body = {"device_token": VALID_DEVICE_TOKEN}
     response = api_client.post("/notifications/device-tokens", json=body, headers={"X-API-Key": "test-key"})
 
     assert response.status_code == 201
@@ -131,14 +135,28 @@ def test_post_device_tokens_returns_201_registered(api_client, mock_db):
     token = call_args[0][0]
     assert isinstance(token, ApnsDeviceToken)
     assert token.user_id == "user1"
-    assert token.device_token == "abc123devicetoken"
+    assert token.device_token == VALID_DEVICE_TOKEN
+
+
+def test_post_device_tokens_rejects_non_hex_token(api_client, mock_db):
+    """16 進でない/短すぎるトークンは 422 で弾き、保存しない（URL 注入・ゴミ値防止）。"""
+    mock_db.save_apns_device_token = MagicMock()
+
+    response = api_client.post(
+        "/notifications/device-tokens",
+        json={"device_token": "../etc/passwd"},
+        headers={"X-API-Key": "test-key"},
+    )
+
+    assert response.status_code == 422
+    mock_db.save_apns_device_token.assert_not_called()
 
 
 def test_post_device_tokens_idempotent_same_token_twice(api_client, mock_db):
     """POST /notifications/device-tokens は同じトークンを 2 回送信しても 201（冪等）"""
     mock_db.save_apns_device_token = MagicMock()
 
-    body = {"device_token": "same-token"}
+    body = {"device_token": VALID_DEVICE_TOKEN}
     r1 = api_client.post("/notifications/device-tokens", json=body, headers={"X-API-Key": "test-key"})
     r2 = api_client.post("/notifications/device-tokens", json=body, headers={"X-API-Key": "test-key"})
 
@@ -152,13 +170,13 @@ def test_delete_device_tokens_returns_200_unregistered(api_client, mock_db):
     mock_db.delete_apns_device_token = MagicMock()
 
     response = api_client.delete(
-        "/notifications/device-tokens?token=abc123devicetoken",
+        f"/notifications/device-tokens?token={VALID_DEVICE_TOKEN}",
         headers={"X-API-Key": "test-key"},
     )
 
     assert response.status_code == 200
     assert response.json()["status"] == "unregistered"
-    mock_db.delete_apns_device_token.assert_called_once_with("user1", "abc123devicetoken")
+    mock_db.delete_apns_device_token.assert_called_once_with("user1", VALID_DEVICE_TOKEN)
 
 
 def test_device_tokens_endpoints_require_authentication():
