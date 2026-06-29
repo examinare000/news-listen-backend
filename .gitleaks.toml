@@ -1,12 +1,10 @@
-# gitleaks 設定。既定ルールを継承しつつ、テスト内のダミー PEM フィクスチャ
-# （実際の秘密ではなく、Notifier の真偽値判定を満たすためのプレースホルダ）を許可する。
-# 実鍵はテスト実行時にメモリ上で生成し、リポジトリにはコミットしない。
+# gitleaks 設定。既定ルールを継承しつつ、通知テストのダミー鍵フィクスチャを許可する。
+# tests/test_notifier.py の APNS_PRIVATE_KEY 等はプレースホルダ（Notifier の真偽値判定用）であり、
+# 実鍵はテスト実行時にメモリ上で生成してコミットしない。path ベースの allowlist は
+# gitleaks の安定機能で、CI 側バージョン(8.24.x)でも確実に効く。
 [extend]
 useDefault = true
 
 [[allowlists]]
-description = "テスト内のダミー PEM 秘密鍵フィクスチャ（実鍵ではない）を許可する"
-condition = "AND"
-regexTarget = "line"
-paths = ['''tests/.*\.py$''']
-regexes = ['''-----BEGIN PRIVATE KEY-----''']
+description = "通知テストのダミー鍵フィクスチャ（実鍵ではない）を許可する"
+paths = ['''tests/test_notifier\.py''']
