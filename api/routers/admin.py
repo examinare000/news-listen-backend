@@ -112,7 +112,7 @@ def delete_featured_site(
 
 
 # ── ユーザー管理（admin ロール必須） ──────────────────────────────
-# featured-sites と異なり require_admin で保護する。共有 X-API-Key（ゲートウェイ）に
+# featured-sites と同様に require_admin で保護する。共有 X-API-Key（ゲートウェイ）に
 # 加えて、ログインユーザーが admin ロールであることを要求する。
 
 
