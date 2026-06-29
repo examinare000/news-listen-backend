@@ -11,7 +11,7 @@ import os
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from api.dependencies import get_firestore_client, get_user_id
 from shared.firestore_client import FirestoreClient
@@ -35,7 +35,9 @@ class _SubscribeRequest(BaseModel):
 
 
 class _DeviceTokenRequest(BaseModel):
-    device_token: str
+    # APNs デバイストークンは 16 進文字列。登録時に形式を検証して、URL パス（/3/device/<token>）への
+    # 不正文字混入（パストラバーサル・クエリ注入）やゴミ値の保存を入口で弾く。
+    device_token: str = Field(min_length=64, max_length=200, pattern=r"^[0-9a-fA-F]+$")
 
 
 @router.get("/vapid-public-key")

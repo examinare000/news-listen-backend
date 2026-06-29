@@ -222,7 +222,6 @@ class ApnsDeviceToken(BaseModel):
 
     user_id: str
     device_token: str
-    bundle_id: str | None = None
     created_at: datetime
 
 

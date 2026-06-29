@@ -237,7 +237,17 @@ class ApnsNotifier:
         if not tokens:
             return
 
-        bearer = self._auth_token()
+        # JWT 署名の失敗（不正な .p8 等）は warning に留め非致命とする（クラス契約どおり）。
+        try:
+            bearer = self._auth_token()
+        except Exception as exc:
+            logger.warning(
+                "Failed to build APNs provider token for user_id=%s: %s",
+                user_id,
+                type(exc).__name__,
+            )
+            return
+
         payload_dict: dict[str, Any] = {
             "aps": {"alert": {"title": title, "body": body}, "sound": "default"},
         }
@@ -250,35 +260,55 @@ class ApnsNotifier:
             "apns-push-type": "alert",
         }
 
-        for token in tokens:
-            url = f"{self._host}/3/device/{token.device_token}"
-            try:
-                response = self._post(url, headers, payload)
-            except Exception as exc:
-                logger.warning(
-                    "Failed to send APNs notification to user_id=%s: %s",
-                    user_id,
-                    type(exc).__name__,
-                )
-                continue
+        # HTTP/2 コネクションをトークン間で再利用する（APNs は長寿命多重化接続を前提）。
+        post, closer = self._make_poster()
+        try:
+            for token in tokens:
+                url = f"{self._host}/3/device/{token.device_token}"
+                try:
+                    response = post(url, headers, payload)
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to send APNs notification to user_id=%s: %s",
+                        user_id,
+                        type(exc).__name__,
+                    )
+                    continue
 
-            status_code = getattr(response, "status_code", None)
-            if status_code is None or 200 <= status_code < 300:
-                continue
-            # 失効トークン（端末がアプリ削除等）→ 掃除する。
-            if status_code == 410 or self._reason(response) in ("BadDeviceToken", "Unregistered"):
-                logger.warning(
-                    "APNs device token invalid (HTTP %s), removing: user_id=%s",
-                    status_code,
-                    user_id,
-                )
-                self._db.delete_apns_device_token(user_id, token.device_token)
-            else:
-                logger.warning(
-                    "APNs send failed for user_id=%s (HTTP %s)",
-                    user_id,
-                    status_code,
-                )
+                status_code = getattr(response, "status_code", None)
+                if status_code is not None and 200 <= status_code < 300:
+                    continue
+                # 失効トークン（端末がアプリ削除等）→ 掃除する。
+                if status_code == 410 or self._reason(response) in ("BadDeviceToken", "Unregistered"):
+                    logger.warning(
+                        "APNs device token invalid (HTTP %s), removing: user_id=%s",
+                        status_code,
+                        user_id,
+                    )
+                    self._db.delete_apns_device_token(user_id, token.device_token)
+                else:
+                    # None（応答不正）を含むその他の失敗。削除せず可視化する。
+                    logger.warning(
+                        "APNs send failed for user_id=%s (HTTP %s)",
+                        user_id,
+                        status_code,
+                    )
+        finally:
+            closer()
+
+    def _make_poster(self) -> tuple[Callable[..., Any], Callable[[], None]]:
+        """送信関数とクローザを返す。注入があればそれを使い、無ければ HTTP/2 クライアントを1個張って再利用する。"""
+        if self._http_post_fn is not None:
+            return self._http_post_fn, lambda: None
+        # 実運用時のみ httpx をインポート（HTTP/2 必須）。
+        import httpx
+
+        client = httpx.Client(http2=True)
+
+        def post(url: str, headers: dict[str, str], payload: str) -> Any:
+            return client.post(url, headers=headers, content=payload)
+
+        return post, client.close
 
     def _auth_token(self) -> str:
         """プロバイダトークン(JWT/ES256)を返す。注入があればそれを使い、無ければ生成・キャッシュする。"""
@@ -306,16 +336,6 @@ class ApnsNotifier:
         self._cached_token = token
         self._cached_token_at = now
         return token
-
-    def _post(self, url: str, headers: dict[str, str], payload: str) -> Any:
-        """APNs へ HTTP/2 POST する。テスト時は http_post_fn 注入で実通信しない。"""
-        if self._http_post_fn is not None:
-            return self._http_post_fn(url, headers, payload)
-        # 実運用時のみ httpx をインポート（HTTP/2 必須）。
-        import httpx
-
-        with httpx.Client(http2=True) as client:
-            return client.post(url, headers=headers, content=payload)
 
     @staticmethod
     def _reason(response: Any) -> str | None:
