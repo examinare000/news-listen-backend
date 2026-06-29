@@ -7,7 +7,7 @@ DELETE /notifications/subscriptions
 from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
-from shared.models import PushSubscription
+from shared.models import ApnsDeviceToken, PushSubscription
 
 NOW = datetime(2026, 6, 14, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -113,6 +113,65 @@ def test_notifications_endpoints_require_authentication():
     assert response.status_code == 401
 
     response = test_client.delete("/notifications/subscriptions?endpoint=http://example.com")
+    assert response.status_code == 401
+
+
+def test_post_device_tokens_returns_201_registered(api_client, mock_db):
+    """POST /notifications/device-tokens は 201 で {"status": "registered"} を返す"""
+    mock_db.save_apns_device_token = MagicMock()
+
+    body = {"device_token": "abc123devicetoken"}
+    response = api_client.post("/notifications/device-tokens", json=body, headers={"X-API-Key": "test-key"})
+
+    assert response.status_code == 201
+    assert response.json()["status"] == "registered"
+    mock_db.save_apns_device_token.assert_called_once()
+
+    call_args = mock_db.save_apns_device_token.call_args
+    token = call_args[0][0]
+    assert isinstance(token, ApnsDeviceToken)
+    assert token.user_id == "user1"
+    assert token.device_token == "abc123devicetoken"
+
+
+def test_post_device_tokens_idempotent_same_token_twice(api_client, mock_db):
+    """POST /notifications/device-tokens は同じトークンを 2 回送信しても 201（冪等）"""
+    mock_db.save_apns_device_token = MagicMock()
+
+    body = {"device_token": "same-token"}
+    r1 = api_client.post("/notifications/device-tokens", json=body, headers={"X-API-Key": "test-key"})
+    r2 = api_client.post("/notifications/device-tokens", json=body, headers={"X-API-Key": "test-key"})
+
+    assert r1.status_code == 201
+    assert r2.status_code == 201
+    assert mock_db.save_apns_device_token.call_count == 2
+
+
+def test_delete_device_tokens_returns_200_unregistered(api_client, mock_db):
+    """DELETE /notifications/device-tokens は 200 で {"status": "unregistered"} を返す"""
+    mock_db.delete_apns_device_token = MagicMock()
+
+    response = api_client.delete(
+        "/notifications/device-tokens?token=abc123devicetoken",
+        headers={"X-API-Key": "test-key"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "unregistered"
+    mock_db.delete_apns_device_token.assert_called_once_with("user1", "abc123devicetoken")
+
+
+def test_device_tokens_endpoints_require_authentication():
+    """デバイストークンエンドポイントは認証（API Key）なしで 401 を返す"""
+    from fastapi.testclient import TestClient
+    import api.main as m
+
+    test_client = TestClient(m.app)
+
+    response = test_client.post("/notifications/device-tokens", json={"device_token": "x"})
+    assert response.status_code == 401
+
+    response = test_client.delete("/notifications/device-tokens?token=x")
     assert response.status_code == 401
 
 
