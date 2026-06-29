@@ -1,0 +1,12 @@
+# gitleaks 設定。既定ルールを継承しつつ、テスト内のダミー PEM フィクスチャ
+# （実際の秘密ではなく、Notifier の真偽値判定を満たすためのプレースホルダ）を許可する。
+# 実鍵はテスト実行時にメモリ上で生成し、リポジトリにはコミットしない。
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "テスト内のダミー PEM 秘密鍵フィクスチャ（実鍵ではない）を許可する"
+condition = "AND"
+regexTarget = "line"
+paths = ['''tests/.*\.py$''']
+regexes = ['''-----BEGIN PRIVATE KEY-----''']

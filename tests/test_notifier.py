@@ -416,7 +416,7 @@ class TestBuildNotifier:
         """APNS 環境変数のみ設定なら ApnsNotifier を単独で返す"""
         mock_db = MagicMock()
         env = {
-            "APNS_PRIVATE_KEY": "-----BEGIN PRIVATE KEY-----\nx\n-----END PRIVATE KEY-----",
+            "APNS_PRIVATE_KEY": "dummy-p8-key-material",
             "APNS_KEY_ID": "KEY123",
             "APNS_TEAM_ID": "TEAM123",
             "APNS_BUNDLE_ID": "com.example.app",
@@ -431,7 +431,7 @@ class TestBuildNotifier:
             "VAPID_PRIVATE_KEY": "priv",
             "VAPID_PUBLIC_KEY": "pub",
             "VAPID_CLAIMS_EMAIL": "email@example.com",
-            "APNS_PRIVATE_KEY": "-----BEGIN PRIVATE KEY-----\nx\n-----END PRIVATE KEY-----",
+            "APNS_PRIVATE_KEY": "dummy-p8-key-material",
             "APNS_KEY_ID": "KEY123",
             "APNS_TEAM_ID": "TEAM123",
             "APNS_BUNDLE_ID": "com.example.app",
