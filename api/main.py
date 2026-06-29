@@ -104,7 +104,7 @@ app.include_router(
     prefix="",
     dependencies=[Security(verify_api_key), Depends(rate_limit("api"))],
 )
-# 管理用 CRUD。専用 admin ロールは無く共有 X-API-Key で保護する（admin.py 冒頭コメント参照）。
+# 管理用 CRUD。共有 X-API-Key（ゲートウェイ）に加え、各エンドポイントで admin ロールを要求する（admin.py 冒頭コメント参照）。
 app.include_router(
     admin.router, prefix="", dependencies=[Security(verify_api_key), Depends(rate_limit("api"))]
 )
