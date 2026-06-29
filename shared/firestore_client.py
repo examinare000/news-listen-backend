@@ -803,11 +803,19 @@ class FirestoreClient:
 
         指定ユーザーが所有するトークンのみを削除する（他ユーザーのデータを削除できない）。
         ドキュメント不在でも例外を出さない。
+
+        doc-id はグローバル（`sha256(device_token)`）のため、所有権検証と削除を
+        トランザクション内で行い、読取り〜削除間の再登録で別ユーザーの doc を消す競合を防ぐ。
         """
-        doc_id = self._apns_token_doc_id(device_token)
-        doc = self._db.collection("apnsDeviceTokens").document(doc_id).get()
-        if doc.exists and doc.to_dict().get("user_id") == user_id:
-            self._db.collection("apnsDeviceTokens").document(doc_id).delete()
+        ref = self._db.collection("apnsDeviceTokens").document(self._apns_token_doc_id(device_token))
+
+        @firestore.transactional
+        def _delete(transaction) -> None:
+            snapshot = ref.get(transaction=transaction)
+            if snapshot.exists and snapshot.to_dict().get("user_id") == user_id:
+                transaction.delete(ref)
+
+        _delete(self._db.transaction())
 
     # ---------- Password Reset Tokens ----------
 

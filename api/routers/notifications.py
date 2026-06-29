@@ -102,7 +102,12 @@ def register_device_token(
 
 @router.delete("/device-tokens")
 def unregister_device_token(
-    token: str = Query(..., description="解除する APNs デバイストークン"),
+    # 登録(register)と同じ 16 進制約を課し、空・空白・過大・非hex を 422 で弾く
+    # （doc-id 生成・将来の URL 利用前に入口で正規化済みの値だけを通す）。
+    token: str = Query(
+        ..., min_length=64, max_length=200, pattern=r"^[0-9a-fA-F]+$",
+        description="解除する APNs デバイストークン（16 進文字列）",
+    ),
     user_id: str = Depends(get_user_id),
     db: FirestoreClient = Depends(get_firestore_client),
 ):
