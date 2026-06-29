@@ -2,10 +2,9 @@
 
 おすすめサイト（featuredSites コレクション）をブートストラップ後に追加・更新・削除する。
 
-認証: 専用の admin ロールは存在しないため、他のエンドポイントと同じ共有 `X-API-Key`
-（main.py の verify_api_key）で保護する。デプロイ単位の単一ユーザー前提（ADR-007）であり、
-管理操作も同じ運用者が行うため許容する。将来必要になれば `ADMIN_API_KEY` を分離し、本ルーターのみ
-別キーで保護する余地を残す。
+認証・認可: 共有 X-API-Key（main.py の verify_api_key）で API ゲートウェイレベルの
+認証を行い、全 4 エンドポイント（GET 一覧含む）を `require_admin` で保護する。
+admin ロールを持つユーザーのみがおすすめサイト管理操作を実行できる。
 """
 import uuid
 from datetime import datetime, timezone
@@ -52,14 +51,14 @@ def _to_response(site: FeaturedSite) -> FeaturedSiteResponse:
     )
 
 
-@router.get("/admin/featured-sites", response_model=FeaturedSitesResponse)
+@router.get("/admin/featured-sites", response_model=FeaturedSitesResponse, dependencies=[Depends(require_admin)])
 def list_featured_sites(
     db: FirestoreClient = Depends(get_firestore_client),
 ):
     return FeaturedSitesResponse(sites=[_to_response(s) for s in db.get_featured_sites()])
 
 
-@router.post("/admin/featured-sites", response_model=FeaturedSiteResponse, status_code=201)
+@router.post("/admin/featured-sites", response_model=FeaturedSiteResponse, status_code=201, dependencies=[Depends(require_admin)])
 def create_featured_site(
     request: FeaturedSiteRequest,
     db: FirestoreClient = Depends(get_firestore_client),
@@ -80,7 +79,7 @@ def create_featured_site(
     return _to_response(site)
 
 
-@router.put("/admin/featured-sites/{site_id}", response_model=FeaturedSiteResponse)
+@router.put("/admin/featured-sites/{site_id}", response_model=FeaturedSiteResponse, dependencies=[Depends(require_admin)])
 def update_featured_site(
     site_id: str,
     request: FeaturedSiteRequest,
@@ -101,7 +100,7 @@ def update_featured_site(
     return _to_response(site)
 
 
-@router.delete("/admin/featured-sites/{site_id}")
+@router.delete("/admin/featured-sites/{site_id}", dependencies=[Depends(require_admin)])
 def delete_featured_site(
     site_id: str,
     db: FirestoreClient = Depends(get_firestore_client),
