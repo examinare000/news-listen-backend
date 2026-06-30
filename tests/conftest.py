@@ -183,6 +183,7 @@ def api_client(mock_db, mock_storage, mock_job_trigger, mock_audit, mock_email_s
             "LOGIN_RATELIMIT_MAX_ATTEMPTS": "0",
             "API_RATELIMIT_MAX_REQUESTS": "0",
             "STAR_RATELIMIT_MAX_REQUESTS": "0",
+            "PODCAST_DAILY_LIMIT_PER_USER": "0",
             "PASSWORD_RESET_RATELIMIT_MAX_REQUESTS": "0",
             "CSRF_PROTECTION_ENABLED": "false",
             "PASSWORD_RESET_URL_BASE": "https://test.example.com/reset-password",
