@@ -312,6 +312,23 @@ def test_cache_miss_uploads_to_cache_path(mocks):
     mocks["storage"].upload_cached_audio.assert_called_once()
 
 
+def test_generation_emits_duration_metric(mocks, caplog):
+    """issue #83: 生成成功時に所要時間メトリクス（podcast_generation_duration）を emit する。"""
+    import logging
+
+    with caplog.at_level(logging.INFO):
+        mocks["main"].main()
+
+    metric_records = [
+        r for r in caplog.records
+        if getattr(r, "metric", None) == "podcast_generation_duration"
+    ]
+    assert metric_records, "duration メトリクスが emit されていない"
+    rec = metric_records[0]
+    assert rec.status == "completed"
+    assert isinstance(rec.duration_ms, int)
+
+
 def test_cache_miss_saves_cache_as_completed(mocks):
     """生成成功時、podcastCache を status=completed で保存すること。"""
     mocks["main"].main()
