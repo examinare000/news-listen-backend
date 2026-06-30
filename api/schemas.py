@@ -55,6 +55,7 @@ class PodcastResponse(BaseModel):
     status: str
     error_message: str | None = None
     playback_position_seconds: float = 0.0
+    title: str = ""
     created_at: str  # ISO 8601
 
     @classmethod
@@ -85,6 +86,7 @@ class PodcastResponse(BaseModel):
             status=podcast.status,
             error_message=podcast.error_message,
             playback_position_seconds=podcast.playback_position_seconds,
+            title=podcast.title,
             created_at=podcast.created_at.isoformat(),
         )
 

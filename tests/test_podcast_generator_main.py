@@ -136,7 +136,7 @@ def mocks():
 
         from jobs.podcast_generator.tts_generator import TtsResult
 
-        mock_script = PodcastScript(japanese_intro="生成イントロ", english_body="English body.")
+        mock_script = PodcastScript(title="", japanese_intro="生成イントロ", english_body="English body.")
         script_gen.generate.return_value = mock_script
         # _PCM_BYTES_PER_SECOND = 48_000 → 1 秒分の音声データ
         tts_gen.generate_audio.return_value = TtsResult(
@@ -618,7 +618,7 @@ def test_cache_miss_per_user_podcast_uses_generated_intro(mocks):
     """
     from jobs.podcast_generator.script_generator import PodcastScript
 
-    script = PodcastScript(japanese_intro="生成されたイントロ", english_body="body")
+    script = PodcastScript(title="", japanese_intro="生成されたイントロ", english_body="body")
     mocks["script_gen"].generate.return_value = script
 
     mocks["main"].main()
