@@ -13,6 +13,7 @@ def test_generate_audio_concatenates_intro_and_body():
     gen = TtsGenerator(gemini_client=mock_gemini)
 
     script = PodcastScript(
+        title="",
         japanese_intro="今日は2026年5月31日です。",
         english_body="Today we discuss Rust programming language.",
     )
@@ -34,7 +35,7 @@ def test_generate_audio_uses_different_voices_for_languages():
 
     gen = TtsGenerator(gemini_client=mock_gemini)
 
-    script = PodcastScript(japanese_intro="日本語", english_body="English")
+    script = PodcastScript(title="", japanese_intro="日本語", english_body="English")
     result = gen.generate_audio(script)
 
     assert isinstance(result, TtsResult)
@@ -57,6 +58,7 @@ def test_generate_audio_partial_failure():
     gen = TtsGenerator(gemini_client=mock_gemini)
 
     script = PodcastScript(
+        title="",
         japanese_intro="今日は2026年5月31日です。",
         english_body="Today we discuss Rust programming language.",
     )
@@ -78,6 +80,7 @@ def test_generate_audio_all_failure_raises_exception():
     gen = TtsGenerator(gemini_client=mock_gemini)
 
     script = PodcastScript(
+        title="",
         japanese_intro="今日は2026年5月31日です。",
         english_body="Today we discuss Rust programming language.",
     )
@@ -100,6 +103,7 @@ def test_generate_audio_retry_success():
     gen = TtsGenerator(gemini_client=mock_gemini)
 
     script = PodcastScript(
+        title="",
         japanese_intro="今日は2026年5月31日です。",
         english_body="Today we discuss Rust programming language.",
     )
@@ -127,6 +131,7 @@ def test_generate_audio_retry_exhausted():
     gen = TtsGenerator(gemini_client=mock_gemini)
 
     script = PodcastScript(
+        title="",
         japanese_intro="今日は2026年5月31日です。",
         english_body="Today we discuss Rust programming language.",
     )
@@ -153,6 +158,7 @@ def test_generate_audio_non_value_error_raises_immediately():
     gen = TtsGenerator(gemini_client=mock_gemini)
 
     script = PodcastScript(
+        title="",
         japanese_intro="今日は2026年5月31日です。",
         english_body="Today we discuss Rust programming language.",
     )

@@ -40,6 +40,7 @@ def _build_user_podcast(
     duration_seconds: int,
     status: str = "completed",
     error_message: str | None = None,
+    title: str = "",
 ) -> Podcast:
     """per-user Podcast を構築する。
 
@@ -49,6 +50,7 @@ def _build_user_podcast(
     Args:
         status: Podcast status（既定 "completed"）。partial_failed 等にも対応。
         error_message: 一部失敗時のエラー文言（既定 None、status != "completed" 時に設定）。
+        title: 台本タイトル（1センテンス日本語要約）。
     """
     return Podcast(
         id=str(uuid.uuid4()),
@@ -60,6 +62,7 @@ def _build_user_podcast(
         duration_seconds=duration_seconds,
         status=status,
         error_message=error_message,
+        title=title,
         created_at=datetime.now(timezone.utc),
         user_id=user_id,
     )
@@ -75,6 +78,7 @@ def _persist_user_podcast(
     duration_seconds: int,
     status: str = "completed",
     error_message: str | None = None,
+    title: str = "",
 ) -> str:
     """star 経由で作られた processing 行があれば promote、無ければ新規 save（後方互換）。
 
@@ -85,6 +89,7 @@ def _persist_user_podcast(
     Args:
         status: Podcast status（既定 "completed"）。partial_failed 等にも対応。
         error_message: 一部失敗時のエラー文言（既定 None）。
+        title: 台本タイトル（1センテンス日本語要約）。
     """
     existing = db.get_user_podcast_for_article(user_id, article_id, difficulty)
     if existing is not None:
@@ -95,12 +100,13 @@ def _persist_user_podcast(
             japanese_intro_text=japanese_intro_text,
             duration_seconds=duration_seconds,
             error_message=error_message,
+            title=title,
         )
         return existing.id
     podcast = _build_user_podcast(
         user_id, article_id, difficulty,
         audio_url, japanese_intro_text, duration_seconds,
-        status=status, error_message=error_message,
+        status=status, error_message=error_message, title=title,
     )
     db.save_podcast(podcast)
     return podcast.id
@@ -177,6 +183,7 @@ def main(notifier=None) -> None:
                 cache.audio_url,
                 cache.japanese_intro_text,
                 cache.duration_seconds,
+                title=cache.title or "",
             )
             logger.info("Cache hit: saved podcast for article %s from shared cache", article_id)
             continue
@@ -271,6 +278,7 @@ def main(notifier=None) -> None:
                 audio_url=audio_blob_path,
                 japanese_intro_text=script.japanese_intro,
                 duration_seconds=duration,
+                title=script.title,
                 created_at=datetime.now(timezone.utc),
             )
         db.save_podcast_cache(cache)
@@ -287,6 +295,7 @@ def main(notifier=None) -> None:
             duration,
             status="partial_failed" if is_partial else "completed",
             error_message=result.error_message,
+            title=script.title,
         )
         logger.info(
             "Saved %spodcast %s for article %s",

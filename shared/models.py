@@ -167,6 +167,9 @@ class Podcast(BaseModel):
     # WHY: 既存 Firestore ドキュメントには無いため default=0.0 で後方互換
     # （onboarding_completed と同手法。クライアント送信値は信用せず duration_seconds で clamp）
     playback_position_seconds: float = 0.0
+    # WHY: 既存 Firestore ドキュメントには無いため default="" で後方互換
+    # （playback_position_seconds と同手法。Gemini 1 回呼び出しで生成される台本タイトル）
+    title: str = ""
     created_at: datetime
     user_id: str
 
@@ -186,6 +189,9 @@ class PodcastCache(BaseModel):
     audio_url: str | None = None
     japanese_intro_text: str | None = None
     duration_seconds: int | None = None
+    # WHY: 既存 Firestore ドキュメントには無いため default=None で後方互換
+    # （japanese_intro_text と同手法。completed 時のみタイトルを格納する）
+    title: str | None = None
     created_at: datetime
 
 

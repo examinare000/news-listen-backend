@@ -24,6 +24,7 @@ def _build_digest_podcast(
     difficulty: str = "toeic_900",
     status: str = "completed",
     error_message: str | None = None,
+    title: str = "",
 ) -> Podcast:
     """digest 専用 Podcast を構築する。
 
@@ -36,6 +37,7 @@ def _build_digest_podcast(
         duration_seconds: 音声長（秒）
         status: Podcast status（既定 "completed"）
         error_message: エラー時の説明
+        title: 台本タイトル（1センテンス日本語要約）
 
     Returns:
         Podcast（type="digest"）
@@ -50,6 +52,7 @@ def _build_digest_podcast(
         duration_seconds=duration_seconds,
         status=status,  # type: ignore[arg-type]
         error_message=error_message,
+        title=title,
         created_at=datetime.now(timezone.utc),
         user_id=user_id,
     )
@@ -207,6 +210,7 @@ def main(notifier=None, *, db=None, storage=None, script_gen=None, tts_gen=None)
         difficulty=difficulty,
         status=status,
         error_message=result.error_message if result.failed_segments else None,
+        title=script.title,
     )
 
     # Podcast 保存

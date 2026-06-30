@@ -33,8 +33,11 @@ _SCRIPT_PROMPT = """\
 {difficulty_instruction}
 
 【出力フォーマット（必ずこの形式で出力）】
+===TITLE===
+（ここにニュース内容を1センテンスに要約した日本語のタイトルを書く。記号や鉤括弧で囲まない。）
+
 ===JAPANESE_INTRO===
-（ここに日本語イントロを書く。日付「{date_str}」から始め、記事の概要を1〜5センテンスで紹介する。）
+（ここに日本語イントロを書く。週刊ニュース番組のような番組設定・演出は不要。「こんにちは。」という挨拶で始め、日付「{date_str}」に軽く触れたうえで、「今回取り上げるニュースは〜」と続けて記事の概要を1〜5センテンスで紹介する。）
 
 ===ENGLISH_BODY===
 （ここに英語本編を書く。上記の難易度指示に従うこと。関連記事の内容も自然に組み込むこと。3〜8分相当のテキスト量。）
@@ -50,8 +53,11 @@ _DIGEST_SCRIPT_PROMPT = """\
 {difficulty_instruction}
 
 【出力フォーマット（必ずこの形式で出力）】
+===TITLE===
+（ここにダイジェスト内容を1センテンスに要約した日本語のタイトルを書く。記号や鉤括弧で囲まない。）
+
 ===JAPANESE_INTRO===
-（ここに日本語イントロを書く。日付「{date_str}」から始め、本日のダイジェスト概要を1〜3センテンスで紹介する。）
+（ここに日本語イントロを書く。週刊ニュース番組のような番組設定・演出は不要。「こんにちは。」という挨拶で始め、日付「{date_str}」に軽く触れたうえで、「今回取り上げるニュースは〜」と続けて本日のダイジェスト概要を1〜3センテンスで紹介する。）
 
 ===ENGLISH_BODY===
 （ここに英語本編を書く。上記の難易度指示に従うこと。複数の記事を coherent な流れで紹介する。5〜15分相当のテキスト量。）
@@ -60,6 +66,7 @@ _DIGEST_SCRIPT_PROMPT = """\
 
 @dataclass
 class PodcastScript:
+    title: str
     japanese_intro: str
     english_body: str
 
@@ -71,8 +78,14 @@ class ScriptGenerator:
     def _parse_script(self, raw: str) -> PodcastScript:
         """生スクリプトから PodcastScript を解析する（抽出された純粋関数）。
 
-        ===JAPANESE_INTRO===...===ENGLISH_BODY===... の形式をパースする。
-        形式が無ければ logger.warning を出して body に生スクリプトを割り当てる。
+        ===TITLE===...===JAPANESE_INTRO===...===ENGLISH_BODY===... の形式をパースする。
+        ===TITLE=== が無い場合は title="" とする（既存 Gemini 出力への後方互換）。
+        ===JAPANESE_INTRO=== / ===ENGLISH_BODY=== が無い場合、または順序が乱れている場合は
+        body に raw を割り当ててグレースフルに縮退する（例外は投げない）。
+
+        WHY: str.split(sep, 1) の 2 要素アンパックはセパレータ未発見時に
+        ValueError を出す。partition() は常に 3 要素タプルを返し、セパレータ発見の
+        有無を sep フィールドの空文字で判定できるため安全。
 
         Args:
             raw: Gemini から返された生スクリプトテキスト
@@ -80,17 +93,49 @@ class ScriptGenerator:
         Returns:
             PodcastScript
         """
-        intro = ""
-        body = ""
-        if "===JAPANESE_INTRO===" in raw and "===ENGLISH_BODY===" in raw:
-            parts = raw.split("===ENGLISH_BODY===")
-            intro = parts[0].replace("===JAPANESE_INTRO===", "").strip()
-            body = parts[1].strip()
-        else:
-            logger.warning("Script format not found, using raw output as body")
-            body = raw
+        _TITLE = "===TITLE==="
+        _INTRO = "===JAPANESE_INTRO==="
+        _BODY  = "===ENGLISH_BODY==="
 
-        return PodcastScript(japanese_intro=intro, english_body=body)
+        # 必須マーカーが揃っているか確認
+        if _INTRO not in raw or _BODY not in raw:
+            logger.warning("Script format not found, using raw output as body")
+            return PodcastScript(title="", japanese_intro="", english_body=raw)
+
+        idx_intro = raw.index(_INTRO)
+        idx_body  = raw.index(_BODY)
+
+        # 順序検証: INTRO が BODY より前に来ること
+        if idx_intro >= idx_body:
+            logger.warning("Script format out of order, using raw output as body")
+            return PodcastScript(title="", japanese_intro="", english_body=raw)
+
+        # ===TITLE=== が ===JAPANESE_INTRO=== より前に出現する場合のみタイトルとして採用。
+        # TITLE が INTRO より後に出現する場合は本文への混入とみなし無視する。
+        title = ""
+        if _TITLE in raw and raw.index(_TITLE) < idx_intro:
+            _, _, after_title = raw.partition(_TITLE)
+            title_part, sep, rest = after_title.partition(_INTRO)
+            if not sep:
+                # 理論上ここには来ないが防御的に縮退
+                logger.warning("Script format not found, using raw output as body")
+                return PodcastScript(title="", japanese_intro="", english_body=raw)
+            title = title_part.strip()
+        else:
+            _, _, rest = raw.partition(_INTRO)
+
+        # rest = ===JAPANESE_INTRO=== 以降のテキスト
+        intro_part, sep2, body_part = rest.partition(_BODY)
+        if not sep2:
+            # ENGLISH_BODY が rest に無い（構造崩壊）→ 縮退
+            logger.warning("Script format not found, using raw output as body")
+            return PodcastScript(title="", japanese_intro="", english_body=raw)
+
+        return PodcastScript(
+            title=title,
+            japanese_intro=intro_part.strip(),
+            english_body=body_part.strip(),
+        )
 
     def generate(
         self,

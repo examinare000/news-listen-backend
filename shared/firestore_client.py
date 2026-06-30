@@ -433,6 +433,7 @@ class FirestoreClient:
                     "status": "processing",
                     "error_message": None,
                     "playback_position_seconds": 0.0,
+                    "title": "",
                     "created_at": now,
                     "user_id": user_id,
                 },
@@ -489,6 +490,7 @@ class FirestoreClient:
         japanese_intro_text: str = "",
         duration_seconds: int = 0,
         error_message: str | None = None,
+        title: str = "",
     ) -> None:
         """processing 状態の per-user Podcast をステータス遷移させる（冪等）。
 
@@ -506,6 +508,7 @@ class FirestoreClient:
             japanese_intro_text: 完了時のイントロテキスト
             duration_seconds: 完了時の音声長
             error_message: 失敗時のエラーメッセージ
+            title: 台本タイトル（1センテンス日本語要約）
         """
         ref = self._db.collection("podcasts").document(podcast_id)
 
@@ -527,6 +530,7 @@ class FirestoreClient:
                 "audio_url": audio_url,
                 "japanese_intro_text": japanese_intro_text,
                 "duration_seconds": duration_seconds,
+                "title": title,
             }
             if error_message is not None:
                 update_data["error_message"] = error_message

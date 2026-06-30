@@ -604,6 +604,7 @@ def digest_mocks():
         from jobs.podcast_generator.tts_generator import TtsResult
 
         script_gen.generate_digest.return_value = PodcastScript(
+            title="",
             japanese_intro="日次ダイジェスト",
             english_body="Daily digest content",
         )
