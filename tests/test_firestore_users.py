@@ -168,3 +168,84 @@ class TestSessions:
         assert count == 2
         d1.reference.delete.assert_called_once()
         d2.reference.delete.assert_called_once()
+
+    # ── issue #84: 本人のセッション一覧・個別失効・現在以外一括失効 ──────────
+
+    def test_list_sessions_for_user_excludes_expired(self, mock_firestore_db):
+        from shared.firestore_client import FirestoreClient
+
+        valid = _session(NOW + timedelta(days=999)).model_dump(mode="json")
+        valid.pop("session_id")
+        expired = _session(datetime(2000, 1, 1, tzinfo=timezone.utc)).model_dump(mode="json")
+        expired.pop("session_id")
+        mock_firestore_db.collection.return_value.where.return_value.stream.return_value = [
+            _doc("sid-valid", valid),
+            _doc("sid-expired", expired),
+        ]
+
+        sessions = FirestoreClient().list_sessions_for_user("uid-1")
+
+        assert [s.session_id for s in sessions] == ["sid-valid"]
+        assert sessions[0].user_id == "uid-1"
+
+    def test_revoke_session_deletes_when_owner_matches(self, mock_firestore_db):
+        from shared.firestore_client import FirestoreClient
+
+        ref = MagicMock()
+        ref.get.return_value = _doc("sid-1", {"user_id": "uid-1"})
+        mock_firestore_db.collection.return_value.document.return_value = ref
+
+        assert FirestoreClient().revoke_session("sid-1", "uid-1") is True
+        ref.delete.assert_called_once()
+
+    def test_revoke_session_refuses_other_user(self, mock_firestore_db):
+        from shared.firestore_client import FirestoreClient
+
+        ref = MagicMock()
+        ref.get.return_value = _doc("sid-1", {"user_id": "uid-OTHER"})
+        mock_firestore_db.collection.return_value.document.return_value = ref
+
+        assert FirestoreClient().revoke_session("sid-1", "uid-1") is False
+        ref.delete.assert_not_called()
+
+    def test_revoke_session_returns_false_when_absent(self, mock_firestore_db):
+        from shared.firestore_client import FirestoreClient
+
+        ref = MagicMock()
+        ref.get.return_value = _doc("sid-1", None, exists=False)
+        mock_firestore_db.collection.return_value.document.return_value = ref
+
+        assert FirestoreClient().revoke_session("sid-1", "uid-1") is False
+        ref.delete.assert_not_called()
+
+    def test_delete_sessions_for_user_except_keeps_current(self, mock_firestore_db):
+        from shared.firestore_client import FirestoreClient
+
+        keep = _doc("sid-current", {"user_id": "uid-1"})
+        other1 = _doc("sid-a", {"user_id": "uid-1"})
+        other2 = _doc("sid-b", {"user_id": "uid-1"})
+        mock_firestore_db.collection.return_value.where.return_value.stream.return_value = [
+            keep,
+            other1,
+            other2,
+        ]
+
+        count = FirestoreClient().delete_sessions_for_user_except("uid-1", "sid-current")
+
+        assert count == 2
+        keep.reference.delete.assert_not_called()
+        other1.reference.delete.assert_called_once()
+        other2.reference.delete.assert_called_once()
+
+    def test_update_session_last_used_writes_field(self, mock_firestore_db):
+        from shared.firestore_client import FirestoreClient
+
+        ref = MagicMock()
+        mock_firestore_db.collection.return_value.document.return_value = ref
+
+        FirestoreClient().update_session_last_used("sid-1", NOW)
+
+        mock_firestore_db.collection.assert_called_with("sessions")
+        ref.update.assert_called_once()
+        payload = ref.update.call_args[0][0]
+        assert "last_used_at" in payload

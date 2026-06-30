@@ -85,6 +85,31 @@ class TestGetCurrentUser:
             get_current_user(_request(cookie="x"), db=db)
         assert exc.value.status_code == 401
 
+    def test_touches_last_used_when_stale(self):
+        """issue #84: last_used_at が未設定（古い）なら last_used_at を更新する。"""
+        from api.dependencies import get_current_user
+        db = MagicMock()
+        session = _session()
+        session.last_used_at = None  # 一度も更新されていない
+        db.get_session.return_value = session
+
+        get_current_user(_request(authorization="Bearer raw-token"), db=db)
+
+        db.update_session_last_used.assert_called_once()
+        assert db.update_session_last_used.call_args[0][0] == hash_token("raw-token")
+
+    def test_does_not_touch_last_used_when_fresh(self):
+        """直近に更新済みなら書き込みを抑制する（スロットル）。"""
+        from api.dependencies import get_current_user
+        db = MagicMock()
+        session = _session()
+        session.last_used_at = datetime.now(timezone.utc)  # ごく最近
+        db.get_session.return_value = session
+
+        get_current_user(_request(authorization="Bearer raw-token"), db=db)
+
+        db.update_session_last_used.assert_not_called()
+
 
 def test_get_user_id_returns_session_user_id():
     from api.dependencies import get_user_id
