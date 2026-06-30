@@ -1,7 +1,8 @@
 """POST /articles/{id}/star, /articles/{id}/dismiss エンドポイント＆検索。"""
+import os
 from typing import Literal
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Query, status
 
 from api.dependencies import (
     get_firestore_client,
@@ -18,6 +19,20 @@ from shared.firestore_client import FirestoreClient
 from shared.models import DEFAULT_PODCAST_LANGUAGE, Article, Session
 
 router = APIRouter()
+
+
+def _env_int(name: str, default: int, minimum: int) -> int:
+    """環境変数を整数として読む。未設定・不正値は default、minimum 未満は minimum に丸める。
+
+    ratelimit.py と同じ規約。リクエスト毎に読み、再起動なしで設定変更可能にする。
+    """
+    raw = os.environ.get(name)
+    if not raw:
+        return default
+    try:
+        return max(minimum, int(raw))
+    except ValueError:
+        return default
 
 
 def _search_articles(
@@ -118,14 +133,45 @@ def star_article(
     if not db.article_exists(article_id):
         raise HTTPException(status_code=404, detail="Article not found")
 
-    db.add_starred_article(user_id, article_id)
-
     # 202=PRD §7 受理（生成は非同期）。star 受付時に processing 行を原子的に確保し
     # 「生成中」をクライアントへ可視化する。難易度は prefs.default_difficulty
     # （generator と一致させ重複行を防ぐ）。
     prefs = db.get_user_prefs(user_id)
     difficulty = prefs.default_difficulty
-    db.try_acquire_user_podcast(user_id, article_id, difficulty, DEFAULT_PODCAST_LANGUAGE)
+    # WHY(#82): 予約取得を star 記録より前に行い、新規 per-user 予約のときだけ日次上限を判定する。
+    # 上限超過時は予約をリリースし star もしない（star を残すとジェネレータが starred_article_ids を
+    # 反復生成し上限を素通りするため。翌日再 star 可能・孤児 processing 行を残さない）。
+    new_podcast_id = db.try_acquire_user_podcast(
+        user_id, article_id, difficulty, DEFAULT_PODCAST_LANGUAGE
+    )
+    if new_podcast_id is not None:
+        # try_acquire が非 None＝「この (user, article, 難易度) の per-user 行がまだ無い」。
+        # これを「新規生成リクエスト」とみなしユーザー別日次上限を消費する（issue #82）。
+        # ※ best-effort soft cap であり厳密なコスト課金ではない:
+        #   - cross-user キャッシュヒット時は実コスト 0 でもクォータを消費する（保守的）。
+        #   - 既に failed 行が残る記事の再 star は None 側へ落ち消費しない（稀な抜け穴）。
+        #   厳密なコスト上限は infra の Cloud Billing Budget（ADR-042）で担保する。
+        max_per_day = _env_int("PODCAST_DAILY_LIMIT_PER_USER", 20, 0)
+        if max_per_day > 0:
+            allowed, retry_after = db.consume_daily_generation(
+                user_id, max_per_day=max_per_day
+            )
+            if not allowed:
+                # 予約をリリースして孤児 processing 行を残さない。
+                db.delete_podcast(new_podcast_id)
+                audit_logger.record(
+                    action="generation_limit_reached",
+                    actor=current,
+                    ip=get_client_ip(http_request),
+                    details={"article_id": article_id, "limit": max_per_day},
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail="Daily podcast generation limit reached. Please try again later.",
+                    headers={"Retry-After": str(retry_after)},
+                )
+
+    db.add_starred_article(user_id, article_id)
 
     # 監査ログ記録（成功後）
     audit_logger.record(
