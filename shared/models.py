@@ -84,6 +84,15 @@ class Session(BaseModel):
     role: UserRole
     created_at: datetime
     expires_at: datetime
+    # issue #84: 本人のセッション管理（一覧・個別失効）用メタ情報。
+    # 既存 Firestore ドキュメントには存在しないため、全て Optional+default で後方互換を保つ。
+    # device_label は User-Agent 由来の表示名。ip_hash は生 IP を保存しないための SHA-256 ハッシュ
+    # （ADR-014 の方針を踏襲）。IPv4 はエントロピーが低く無塩ハッシュは総当たりで復元しうるため、
+    # 強い匿名化ではなく「生値非保存・等価照合」目的に留める（クライアントには返さない）。
+    # last_used_at は直近アクセス時刻（スロットル更新）。
+    device_label: str | None = None
+    ip_hash: str | None = None
+    last_used_at: datetime | None = None
 
 
 class Article(BaseModel):
