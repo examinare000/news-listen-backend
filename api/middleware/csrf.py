@@ -131,6 +131,9 @@ def build_csrf_config(env: Mapping[str, str]) -> CsrfConfig:
             "/auth/password/reset",
             "/auth/passkey/login/options",
             "/auth/passkey/login/verify",
+            # クライアントエラー受信口（issue #83）。未ログイン時もエラーは起き得るため CSRF を免除する
+            # （ログ用途・API-Key + レート制限で保護・機微な状態変更は無い）。
+            "/client-errors",
         }
 
     return CsrfConfig(enabled=enabled, exempt_paths=exempt_paths)

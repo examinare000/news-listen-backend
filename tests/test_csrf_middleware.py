@@ -120,6 +120,7 @@ class TestCsrfConfig:
             "/auth/password/reset",
             "/auth/passkey/login/options",
             "/auth/passkey/login/verify",
+            "/client-errors",
         }
 
     def test_csrf_config_enabled_true(self):
@@ -191,6 +192,7 @@ class TestCsrfConfig:
             "/auth/password/reset",
             "/auth/passkey/login/options",
             "/auth/passkey/login/verify",
+            "/client-errors",
         }
         for value in ["   ", ",", " , "]:
             config = build_csrf_config({"CSRF_EXEMPT_PATHS": value})
