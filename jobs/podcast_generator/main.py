@@ -1,12 +1,14 @@
 """Cloud Run Job エントリポイント: Podcast 生成。"""
 import logging
 import os
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import get_args
 
 from shared.firestore_client import FirestoreClient
 from shared.gemini_client import GeminiClient
+from shared.logging_config import configure_logging, emit_metric
 from shared.models import DEFAULT_PODCAST_LANGUAGE, DifficultyLevel, Podcast, PodcastCache
 from shared.notifier import build_notifier
 from shared.storage_client import StorageClient
@@ -14,7 +16,8 @@ from shared.utils import cache_key_for
 from jobs.podcast_generator.script_generator import ScriptGenerator
 from jobs.podcast_generator.tts_generator import TtsGenerator
 
-logging.basicConfig(level=logging.INFO)
+# 構造化ログ＋機微情報スクラブを設定（issue #83）。冪等。
+configure_logging()
 logger = logging.getLogger(__name__)
 
 # Gemini TTS は 24kHz モノラル PCM を返す（16bit signed = 2 bytes/sample）。
@@ -197,13 +200,30 @@ def main(notifier=None) -> None:
         ][:_MAX_RELATED_ARTICLES]
 
         logger.info("Generating podcast for: %s", article.title)
+        _gen_started = time.perf_counter()
         try:
             script = script_gen.generate(article, related, difficulty, today)
             result = tts_gen.generate_audio(script)
             audio_bytes = result.audio
             audio_blob_path = storage.upload_cached_audio(ck, audio_bytes)
             duration = len(audio_bytes) // _PCM_BYTES_PER_SECOND
+            # 生成所要時間の SLO 信号（2 分以内・PRD §2/§6 / issue #83）。Cloud Logging の
+            # log-based metric で集計し、しきい値超過をアラートする。
+            emit_metric(
+                logger,
+                "podcast_generation_duration",
+                status="completed",
+                duration_ms=int((time.perf_counter() - _gen_started) * 1000),
+                article_id=article_id,
+            )
         except Exception as e:
+            emit_metric(
+                logger,
+                "podcast_generation_duration",
+                status="failed",
+                duration_ms=int((time.perf_counter() - _gen_started) * 1000),
+                article_id=article_id,
+            )
             logger.error("Failed to generate podcast for %s: %s", article_id, e)
             # 自己修復: 生成失敗（Gemini/TTS/upload）のみ failed を記録し、
             # 次回トリガーで再確保・再生成できるようにする。

@@ -15,6 +15,11 @@ from api.middleware.csrf import CsrfMiddleware, build_csrf_config
 from api.middleware.security_headers import SecurityHeadersMiddleware, build_security_headers
 from api.ratelimit import rate_limit
 from api.routers import admin, articles, auth, feed, notifications, passkey as _passkey_router, podcasts, settings
+from shared.logging_config import configure_logging
+
+# 構造化ログ＋機微情報スクラブを最初に設定する（issue #83）。
+# LOG_FORMAT=json で Cloud Logging 互換 JSON、LOG_LEVEL でレベル制御。冪等。
+configure_logging()
 
 _logger = logging.getLogger(__name__)
 
@@ -46,6 +51,25 @@ async def _redact_validation_errors(request: Request, exc: RequestValidationErro
         content=jsonable_encoder({"detail": sanitized}),
     )
 
+
+async def handle_unhandled_exception(request: Request, exc: Exception) -> JSONResponse:
+    """未捕捉例外（500）を構造化ログに記録し、内部情報を漏らさない汎用本文を返す（issue #83）。
+
+    例外メッセージ・トレースはサーバーログにのみ残し（スクラブ Filter 適用）、
+    クライアントには定型メッセージのみ返す（情報漏洩防止）。path/method は可観測性のため記録する。
+    """
+    _logger.error(
+        "unhandled_exception path=%s method=%s",
+        request.url.path,
+        request.method,
+        exc_info=exc,
+    )
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={"detail": "Internal server error"},
+    )
+
+
 # ミドルウェア登録順序（後で add されたものが外側に適用される）:
 # 適用順（外→内）: SecurityHeaders（最外）→ CORS → CSRF（最内）→ ルーター
 # WHY: CORS を CSRF の外側に置くことで、CsrfMiddleware が返す 403 が CORS を通過し、
@@ -55,6 +79,9 @@ async def _redact_validation_errors(request: Request, exc: RequestValidationErro
 app.add_middleware(CsrfMiddleware, config=build_csrf_config(os.environ))
 app.add_middleware(CORSMiddleware, **build_cors_options(os.environ))
 app.add_middleware(SecurityHeadersMiddleware, headers=build_security_headers(os.environ))
+
+# 未捕捉例外（500）を構造化ログに記録し、内部情報を漏らさず返す（issue #83）。
+app.add_exception_handler(Exception, handle_unhandled_exception)
 
 # API_KEY 未設定時は全リクエストが 401 になる。デプロイ設定ミスを起動時に検出できるよう警告する。
 if not os.environ.get("API_KEY"):
