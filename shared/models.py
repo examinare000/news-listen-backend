@@ -21,6 +21,7 @@ AuditAction = Literal[
     "article_star",
     "article_dismiss",
     "article_mark_read",
+    "generation_limit_reached",
     "rss_source_add",
     "rss_source_remove",
     "preferences_update",

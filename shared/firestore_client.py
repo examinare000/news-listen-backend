@@ -752,6 +752,61 @@ class FirestoreClient:
 
         return _consume(self._db.transaction())
 
+    def consume_daily_generation(
+        self, user_id: str, now: datetime | None = None, max_per_day: int = 0
+    ) -> tuple[bool, int]:
+        """ユーザー別・1 日あたりの Podcast 生成回数をトランザクションで計数する（issue #82）。
+
+        コレクション dailyGenerationCounts、doc_id f"{user_id}_{day}"（day は UTC の
+        YYYY-MM-DD）に記録。スキーマ: {"user_id": str, "day": str, "count": int}。
+        日付が変わると doc_id が変わるため、前日のカウントは参照されず暗黙にリセットされる
+        （計数のリセットに TTL/cron は不要。recommendations と同じ日次バケット方式）。
+        なお過去日のドキュメントは自然消滅しないため蓄積する（1 件は極小）。蓄積が問題なら
+        Firestore TTL ポリシーの付与を別途検討する（infra・ADR-042 のフォローアップ）。
+
+        当日の count が max_per_day 未満なら +1 して (True, 0)。到達済みなら更新せず
+        (False, retry_after)。retry_after は翌 UTC 0 時までの秒数（最小 1）。
+
+        Args:
+            user_id: 対象ユーザー
+            now: 現在時刻（デフォルト: UTC now）
+            max_per_day: 1 日あたり上限（0 以下で無効化・即 return）
+
+        Returns:
+            (allowed, retry_after)
+        """
+        if max_per_day <= 0:
+            # 無効化: DB アクセス無しで即座に return
+            return True, 0
+
+        if now is None:
+            now = datetime.now(timezone.utc)
+
+        day = now.strftime("%Y-%m-%d")
+        ref = self._db.collection("dailyGenerationCounts").document(f"{user_id}_{day}")
+
+        # 翌 UTC 0 時までの残り秒数（リセットまでの時間）。
+        tomorrow = (now + timedelta(days=1)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        retry_after = max(1, int((tomorrow - now).total_seconds()))
+
+        @firestore.transactional
+        def _consume(transaction) -> tuple[bool, int]:
+            snapshot = ref.get(transaction=transaction)
+            data = snapshot.to_dict() if snapshot.exists else {}
+            count = data.get("count", 0)
+
+            if count >= max_per_day:
+                # 上限到達。超過試行は非カウント（consume_rate_limit と同方針）。
+                return False, retry_after
+
+            count += 1
+            transaction.set(ref, {"user_id": user_id, "day": day, "count": count})
+            return True, 0
+
+        return _consume(self._db.transaction())
+
     # ---------- Audit logs ----------
 
     def append_audit_log(self, audit: AuditLog) -> str:
