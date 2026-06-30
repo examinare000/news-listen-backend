@@ -146,6 +146,80 @@ def test_star_blocked_when_star_limit_exceeded_returns_429_and_no_job(
     mock_job_trigger.trigger.assert_not_called()
 
 
+def test_star_over_daily_generation_limit_returns_429(
+    api_client_with_auth, mock_db, mock_job_trigger, mock_audit
+):
+    """issue #82: 日次生成上限超過で 429 を返し、生成を起動せず予約をリリースする。"""
+    mock_db.article_exists.return_value = True
+    mock_db.consume_rate_limit.return_value = (True, 0)  # star レート制限は通過
+    mock_db.get_user_prefs.return_value.default_difficulty = "toeic_900"
+    # 新規生成の予約に成功（= 課金対象）
+    mock_db.try_acquire_user_podcast.return_value = "pod-new-1"
+    # 日次上限に到達
+    mock_db.consume_daily_generation.return_value = (False, 43200)
+
+    with patch.dict("os.environ", {"PODCAST_DAILY_LIMIT_PER_USER": "3"}):
+        response = api_client_with_auth.post(
+            "/articles/abc123/star", headers={"X-API-Key": "test-key"}
+        )
+
+    assert response.status_code == 429
+    assert response.headers["Retry-After"] == "43200"
+    # 孤児の processing 行を作らないよう予約をリリース
+    mock_db.delete_podcast.assert_called_once_with("pod-new-1")
+    # 生成も star も行わない（翌日再 star 可能）
+    mock_db.add_starred_article.assert_not_called()
+    mock_job_trigger.trigger.assert_not_called()
+    # 監査ログに上限到達を記録
+    actions = {c.kwargs.get("action") for c in mock_audit.record.call_args_list}
+    assert "generation_limit_reached" in actions
+
+
+def test_star_within_daily_generation_limit_triggers_generation(
+    api_client_with_auth, mock_db, mock_job_trigger, mock_audit
+):
+    """issue #82: 上限内なら通常どおり生成を起動し star する。"""
+    mock_db.article_exists.return_value = True
+    mock_db.consume_rate_limit.return_value = (True, 0)
+    mock_db.get_user_prefs.return_value.default_difficulty = "toeic_900"
+    mock_db.try_acquire_user_podcast.return_value = "pod-new-1"
+    mock_db.consume_daily_generation.return_value = (True, 0)
+
+    with patch.dict("os.environ", {"PODCAST_DAILY_LIMIT_PER_USER": "3"}):
+        response = api_client_with_auth.post(
+            "/articles/abc123/star", headers={"X-API-Key": "test-key"}
+        )
+
+    assert response.status_code == 202
+    mock_db.add_starred_article.assert_called_once_with("user1", "abc123")
+    mock_db.delete_podcast.assert_not_called()
+    triggered = {c.args[0] for c in mock_job_trigger.trigger.call_args_list}
+    assert "podcast-generator" in triggered
+
+
+def test_star_cache_hit_does_not_consume_daily_quota(
+    api_client_with_auth, mock_db, mock_job_trigger
+):
+    """issue #82: 既存行/キャッシュ（try_acquire が None）では日次クォータを消費しない。"""
+    mock_db.article_exists.return_value = True
+    mock_db.consume_rate_limit.return_value = (True, 0)
+    mock_db.get_user_prefs.return_value.default_difficulty = "toeic_900"
+    # 既に処理中/キャッシュあり → 新規生成ではない
+    mock_db.try_acquire_user_podcast.return_value = None
+
+    with patch.dict("os.environ", {"PODCAST_DAILY_LIMIT_PER_USER": "3"}):
+        response = api_client_with_auth.post(
+            "/articles/abc123/star", headers={"X-API-Key": "test-key"}
+        )
+
+    assert response.status_code == 202
+    mock_db.consume_daily_generation.assert_not_called()
+    mock_db.add_starred_article.assert_called_once_with("user1", "abc123")
+    # None 経路でも従来どおり生成ジョブは起動する（回帰防止）。
+    triggered = {c.args[0] for c in mock_job_trigger.trigger.call_args_list}
+    assert "podcast-generator" in triggered
+
+
 def test_star_within_limit_triggers_jobs(api_client_with_auth, mock_db, mock_job_trigger, mock_audit, current_session):
     """star が制限内（consume_rate_limit=(True,0)）でジョブを起動する。"""
     mock_db.article_exists.return_value = True

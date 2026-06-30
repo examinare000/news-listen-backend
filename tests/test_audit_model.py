@@ -24,7 +24,8 @@ def test_audit_log_action_literal():
         "login_success", "login_failure", "logout", "login_lockout",
         "user_create", "user_update", "user_role_change", "user_password_reset",
         "user_delete", "session_revoke", "article_star", "article_dismiss", "article_mark_read",
-        "rss_source_add", "rss_source_remove", "preferences_update", "onboarding_complete"
+        "rss_source_add", "rss_source_remove", "preferences_update", "onboarding_complete",
+        "generation_limit_reached"
     ]
     for action in valid_actions:
         audit = AuditLog(
