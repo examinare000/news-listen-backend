@@ -14,7 +14,7 @@ from api.cors_config import build_cors_options
 from api.middleware.csrf import CsrfMiddleware, build_csrf_config
 from api.middleware.security_headers import SecurityHeadersMiddleware, build_security_headers
 from api.ratelimit import rate_limit
-from api.routers import admin, articles, auth, feed, notifications, passkey as _passkey_router, podcasts, settings
+from api.routers import admin, articles, auth, client_errors, feed, notifications, passkey as _passkey_router, podcasts, settings
 from shared.logging_config import configure_logging
 
 # 構造化ログ＋機微情報スクラブを最初に設定する（issue #83）。
@@ -140,6 +140,12 @@ app.include_router(
 # login系2本（login/options・login/verify）は CSRF 免除（build_csrf_config のデフォルト参照）。
 app.include_router(
     _passkey_router.router, prefix="", dependencies=[Security(verify_api_key), Depends(rate_limit("api"))]
+)
+
+# クライアント（web/iOS）エラー受信口（issue #83）。認証セッション不要・X-API-Key + レート制限で保護。
+# /client-errors は CSRF 免除（未ログイン時もエラーは起き得るため。csrf.py の既定免除参照）。
+app.include_router(
+    client_errors.router, prefix="", dependencies=[Security(verify_api_key), Depends(rate_limit("api"))]
 )
 
 
