@@ -38,6 +38,56 @@ def _session_ttl_hours() -> int:
     return _env_int("SESSION_TTL_HOURS", _DEFAULT_SESSION_TTL_HOURS, 1)
 
 
+def device_label_from_user_agent(user_agent: str | None) -> str | None:
+    """User-Agent から「ブラウザ on OS」形式の表示名を導出する（issue #84）。
+
+    セッション一覧 UI で利用者がどのデバイスか判別できるようにするための best-effort。
+    解析できない UA（自前アプリ等）は "Unknown device"、空文字・None は None を返す。
+    PII を含めない（バージョン番号や詳細は落とす）。
+    """
+    if not user_agent:
+        return None
+
+    ua = user_agent
+    # OS 判定（順序に意味あり: iPhone/iPad は iOS の "like Mac OS X" より先、
+    # Android は Linux より先に判定する）。
+    # 注意: iPadOS 13+ の Safari は既定でデスクトップ級 UA（Macintosh）を送り "iPad" を
+    # 含まないため、その場合は macOS と判定される（best-effort の限界・許容）。
+    if "iPhone" in ua:
+        os_name = "iOS"
+    elif "iPad" in ua:
+        os_name = "iPadOS"
+    elif "Android" in ua:
+        os_name = "Android"
+    elif "Macintosh" in ua or "Mac OS X" in ua:
+        os_name = "macOS"
+    elif "Windows" in ua:
+        os_name = "Windows"
+    elif "Linux" in ua:
+        os_name = "Linux"
+    else:
+        os_name = None
+
+    # ブラウザ判定（順序に意味あり: Edg/Chrome は Safari の Version 文字列より先、
+    # Chrome は多くの UA に含まれるため Edge/Firefox を先に判定する）。
+    if "Edg" in ua:
+        browser = "Edge"
+    elif "Firefox" in ua:
+        browser = "Firefox"
+    elif "Chrome" in ua or "CriOS" in ua:
+        browser = "Chrome"
+    elif "Safari" in ua or "Version/" in ua:
+        browser = "Safari"
+    else:
+        browser = None
+
+    if browser and os_name:
+        return f"{browser} on {os_name}"
+    if os_name:
+        return os_name
+    return "Unknown device"
+
+
 def _cookie_secure() -> bool:
     """Cookie の Secure 属性。ローカル http 開発では SESSION_COOKIE_SECURE=false で無効化する。"""
     return os.environ.get("SESSION_COOKIE_SECURE", "true").lower() != "false"
@@ -101,6 +151,10 @@ def issue_session(
         role=user.role,
         created_at=now,
         expires_at=now + timedelta(hours=ttl_hours),
+        # issue #84: セッション一覧 UI 用メタ情報。生 IP は保存せずハッシュ化する。
+        device_label=device_label_from_user_agent(request.headers.get("User-Agent")),
+        ip_hash=hash_token(ip),
+        last_used_at=now,
     )
     db.create_session(session)
 

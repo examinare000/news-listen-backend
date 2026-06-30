@@ -35,6 +35,9 @@ from api.schemas import (
     PasswordChangeRequest,
     ProfileUpdateRequest,
     ResetPasswordRequest,
+    RevokeSessionsResponse,
+    SessionResponse,
+    SessionsListResponse,
     UserResponse,
 )
 from shared.firestore_client import FirestoreClient
@@ -211,6 +214,88 @@ def me(
     if "csrf_token" not in request.cookies:
         _set_csrf_cookie(response)
     return _user_response(user)
+
+
+# ── 自分のセッション管理（issue #84） ────────────────────────────────
+# 端末紛失・不審ログイン時に本人が自衛できるよう、有効セッションの一覧・個別失効・
+# 「他の全デバイスからログアウト」を提供する。passkey credentials の list/delete を踏襲。
+
+
+@router.get("/auth/sessions", response_model=SessionsListResponse)
+def list_sessions(
+    request: Request,
+    current: Session = Depends(get_current_user),
+    db: FirestoreClient = Depends(get_firestore_client),
+):
+    """本人の有効セッションを一覧する。現在のセッションには current=True を立てる。
+
+    現在のセッションはリクエスト由来のトークンから算出し、クライアント値に依存しない。
+    """
+    # get_current_user 通過後なので token は必ず存在する。else は防御的フォールバック。
+    token = _extract_session_token(request)
+    current_session_id = hash_token(token) if token else None
+
+    sessions = db.list_sessions_for_user(current.user_id)
+    items = [
+        SessionResponse(
+            id=s.session_id,
+            device_label=s.device_label,
+            created_at=s.created_at.isoformat(),
+            last_used_at=s.last_used_at.isoformat() if s.last_used_at else None,
+            current=(s.session_id == current_session_id),
+        )
+        for s in sessions
+    ]
+    return SessionsListResponse(sessions=items)
+
+
+@router.delete("/auth/sessions/{session_id}")
+def revoke_session(
+    session_id: str,
+    request: Request,
+    current: Session = Depends(get_current_user),
+    db: FirestoreClient = Depends(get_firestore_client),
+    audit_logger: AuditLogger = Depends(get_audit_logger),
+):
+    """本人のセッションを 1 件失効させる（所有権検証）。
+
+    他人のセッション・不在は 404（存在を秘匿）。失効後そのセッションは 401 になる。
+    """
+    revoked = db.revoke_session(session_id, current.user_id)
+    if not revoked:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+    audit_logger.record(
+        action="session_revoke",
+        actor=current,
+        ip=get_client_ip(request),
+        details={"scope": "self_single"},
+    )
+    return {"status": "ok"}
+
+
+@router.post("/auth/sessions/revoke-others", response_model=RevokeSessionsResponse)
+def revoke_other_sessions(
+    request: Request,
+    current: Session = Depends(get_current_user),
+    db: FirestoreClient = Depends(get_firestore_client),
+    audit_logger: AuditLogger = Depends(get_audit_logger),
+):
+    """現在のセッション以外を全て失効させる（「他の全デバイスからログアウト」）。
+
+    保持する現在のセッションはリクエスト由来で算出し、クライアント提供値を信用しない。
+    """
+    # get_current_user 通過後なので token は必ず存在する。else は防御的フォールバック
+    # （空文字はどの実 doc-id（64桁hex）とも一致しないため、誤って現在を巻き込まない）。
+    token = _extract_session_token(request)
+    current_session_id = hash_token(token) if token else ""
+    revoked_count = db.delete_sessions_for_user_except(current.user_id, current_session_id)
+    audit_logger.record(
+        action="session_revoke",
+        actor=current,
+        ip=get_client_ip(request),
+        details={"scope": "self_others", "revoked_session_count": revoked_count},
+    )
+    return RevokeSessionsResponse(revoked_count=revoked_count)
 
 
 @router.patch("/auth/me", response_model=UserResponse)

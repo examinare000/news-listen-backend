@@ -166,6 +166,65 @@ class FirestoreClient:
             doc.reference.delete()
         return len(docs)
 
+    def list_sessions_for_user(self, user_id: str) -> list["Session"]:
+        """指定ユーザーの有効なセッションを一覧する（issue #84）。
+
+        期限切れは除外する（遅延削除はしない: 読み取り専用の一覧で副作用を持たせない）。
+        session_id は doc.id（トークンのハッシュ）から復元する。
+        last_used_at（無ければ created_at）の降順で返し、直近利用が上に来るようにする。
+        """
+        now = datetime.now(timezone.utc)
+        docs = self._db.collection("sessions").where("user_id", "==", user_id).stream()
+        sessions: list[Session] = []
+        for doc in docs:
+            session = Session(**{**doc.to_dict(), "session_id": doc.id})
+            if session.expires_at <= now:
+                continue
+            sessions.append(session)
+        sessions.sort(key=lambda s: s.last_used_at or s.created_at, reverse=True)
+        return sessions
+
+    def revoke_session(self, session_id: str, user_id: str) -> bool:
+        """所有権を検証して 1 セッションを失効させる（issue #84）。
+
+        指定ユーザーが所有するセッションのみ削除し、削除したら True を返す。
+        不在・他人のセッションは削除せず False を返す（呼び出し側で 404 化し、存在を秘匿する）。
+        """
+        ref = self._db.collection("sessions").document(session_id)
+        doc = ref.get()
+        if doc.exists and doc.to_dict().get("user_id") == user_id:
+            ref.delete()
+            return True
+        return False
+
+    def delete_sessions_for_user_except(self, user_id: str, keep_session_id: str) -> int:
+        """現在のセッション（keep_session_id）以外を全て失効させ、削除件数を返す（issue #84）。
+
+        「他の全デバイスからログアウト」用。keep_session_id はリクエスト由来で算出し、
+        クライアント提供値を信用しないこと（呼び出し側の責務）。
+        """
+        docs = list(
+            self._db.collection("sessions").where("user_id", "==", user_id).stream()
+        )
+        count = 0
+        for doc in docs:
+            if doc.id == keep_session_id:
+                continue
+            doc.reference.delete()
+            count += 1
+        return count
+
+    def update_session_last_used(self, session_id: str, last_used_at: datetime) -> None:
+        """セッションの last_used_at を更新する（issue #84）。
+
+        認証経路でスロットル付きで呼ばれる（頻繁な書き込みを避けるため呼び出し側で間引く）。
+        ドキュメント不在時は Firestore の update が例外を投げうるが、呼び出し側が
+        直前に get_session で存在を確認しているため通常は発生しない。
+        """
+        self._db.collection("sessions").document(session_id).update(
+            {"last_used_at": last_used_at.isoformat()}
+        )
+
     # ---------- Featured sites (global) ----------
 
     def get_featured_sites(self) -> list[FeaturedSite]:

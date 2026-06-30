@@ -279,6 +279,32 @@ class UserListResponse(BaseModel):
     users: list[UserResponse]
 
 
+# ── 自分のセッション管理（issue #84） ────────────────────────────────
+
+
+class SessionResponse(BaseModel):
+    """ログイン中セッション 1 件のレスポンス。
+
+    id はセッション識別子（トークンの SHA-256 ハッシュ）。SHA-256 は不可逆であり、
+    認証には生トークンが必要なため公開しても認証は突破されない。失効 API でこの id を指定する。
+    ip_hash 等の内部情報はレスポンスに含めない。
+    """
+
+    id: str
+    device_label: str | None = None
+    created_at: str  # ISO 8601
+    last_used_at: str | None = None  # ISO 8601
+    current: bool
+
+
+class SessionsListResponse(BaseModel):
+    sessions: list[SessionResponse]
+
+
+class RevokeSessionsResponse(BaseModel):
+    revoked_count: int
+
+
 # ── 監査ログ ────────────────────────────────────────────
 
 

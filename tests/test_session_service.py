@@ -127,3 +127,52 @@ def test_issue_session_no_old_token_no_delete(user, mock_db, mock_response):
         issue_session(mock_db, user, mock_request, mock_response, "127.0.0.1")
 
     mock_db.delete_session.assert_not_called()
+
+
+# ── issue #84: セッションメタ情報（device_label / ip_hash / last_used_at） ──────
+
+
+def test_issue_session_populates_metadata(user, mock_db, mock_response):
+    """issue_session は ip_hash（生IPを保存しない）・device_label・last_used_at を埋める。"""
+    from api.session_service import issue_session
+    from shared.security import hash_token
+
+    mock_request = MagicMock()
+    mock_request.cookies = {}
+    mock_request.headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Chrome/120.0"}
+
+    with patch.dict("os.environ", {"SESSION_COOKIE_SECURE": "false"}):
+        _, session = issue_session(mock_db, user, mock_request, mock_response, "203.0.113.7")
+
+    created = mock_db.create_session.call_args[0][0]
+    # 生IPは保存せずハッシュで保持する
+    assert created.ip_hash == hash_token("203.0.113.7")
+    assert "203.0.113.7" not in (created.ip_hash or "")
+    # User-Agent からデバイス名を導出している
+    assert created.device_label == "Chrome on macOS"
+    # 作成時は last_used_at が created_at と同値
+    assert created.last_used_at == created.created_at
+
+
+# ── issue #84: User-Agent からのデバイス名導出 ───────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "ua,expected",
+    [
+        ("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Safari", "Safari on iOS"),
+        ("Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X) Safari", "Safari on iPadOS"),
+        ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Chrome/120.0", "Chrome on macOS"),
+        ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) Firefox/121.0", "Firefox on Windows"),
+        ("Mozilla/5.0 (Linux; Android 14) Chrome/120.0 Mobile", "Chrome on Android"),
+        ("Mozilla/5.0 (Macintosh) Version/17.0 Safari/605.1", "Safari on macOS"),
+        ("Mozilla/5.0 (Windows NT 10.0) Edg/120.0", "Edge on Windows"),
+        ("NewsListen-iOS/1.0", "Unknown device"),
+        ("", None),
+        (None, None),
+    ],
+)
+def test_device_label_from_user_agent(ua, expected):
+    from api.session_service import device_label_from_user_agent
+
+    assert device_label_from_user_agent(ua) == expected
